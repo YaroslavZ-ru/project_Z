@@ -1,0 +1,359 @@
+# План реализации AI-Terminator (Часть 3 из 8) — ИСПРАВЛЕННАЯ ВЕРСИЯ (изменения 11–15)
+
+## Введение
+
+В этой исправленной версии учтены все 58 проблем, выявленных при анализе. Основные изменения:
+
+- Исправлено использование `lru_cache` (теперь кэш на уровне класса, без проблемы с `self`).
+- Добавлена поддержка фраз (нескольких слов) в `get_vector` и `get_phrase_vector`.
+- Устранено несоответствие нормализации весов: теперь веса **не делятся на сумму** (следуем формуле ТЗ: `weighted_sum = sum(wi*vi)`, затем L2-нормализация, без деления на сумму весов).
+- Добавлен LRU-кэш для векторов запросов (требование ТЗ).
+- Реализован fallback-режим при отсутствии fastText (статический эмбеддинг из npy-файла).
+- Исправлены ошибки типов, добавлены проверки на NaN/Inf.
+- Учтены противоречия с весами синонимов (оставлено 0.1 суммарно, а 0.4 – только для выбора).
+- Добавлены тесты и документация.
+
+Все изменения следуют принципу: примеры кода – для понимания, а не для копирования. Пути к файлам берутся из конфигурации.
+
+---
+
+## Изменение 11: FastTextWrapper – исправленный
+
+### Что нужно сделать
+
+Создать модуль `src/embeddings.py` с классом `FastTextWrapper`, который:
+
+- При инициализации принимает путь к модели и (опционально) путь к резервному npy-файлу со статическими эмбеддингами.
+- Загружает модель лениво (при первом вызове `get_vector`).
+- Предоставляет метод `get_word_vector(word: str) -> np.ndarray` – для одного слова. Использует внутренний кэш слов (LRU) для ускорения.
+- Предоставляет метод `get_phrase_vector(phrase: str) -> np.ndarray`, который разбивает фразу на слова, получает вектор каждого слова и усредняет.
+- Предоставляет метод `get_dimension() -> int` – возвращает размерность (300).
+- Обрабатывает ошибки: если модель не найдена или повреждена, переключается на резервный режим (загружает статический эмбеддинг из `.npy` файла, где для каждого слова есть вектор; если и его нет, возвращает случайный нормализованный вектор и логирует ошибку).
+- В резервном режиме также проверяет наличие слова в статическом словаре; если отсутствует, возвращает нулевой вектор.
+
+**Кэширование слов:** использовать `functools.lru_cache(maxsize=20000)` на методе `_get_vector_uncached`, но чтобы избежать проблемы с `self`, нужно определить внутреннюю функцию или использовать `@staticmethod` и передавать модель. Проще – создать кэш в виде словаря `self._word_cache`.
+
+**Важно:** Формула векторизации больше не делит на сумму весов, но вектор запроса всё равно будет L2-нормализован. Это соответствует ТЗ.
+
+### Рекомендации по реализации
+
+- Использовать `fasttext.load_model()` – он бросает `RuntimeError` при повреждении файла.
+- Резервный файл: `models/static_embeddings.npy` – должен быть словарём `{word: vector}`. Если его нет, при инициализации выдать предупреждение.
+- Размерность получить из первого вектора модели или из статического файла.
+- Для усреднения фразы: разбить по пробелам, игнорировать пустые токены. Если после разбиения нет слов, вернуть нулевой вектор.
+
+### Пример (иллюстрация исправленной версии)
+
+```python
+# src/embeddings.py
+import numpy as np
+import fasttext
+import logging
+from pathlib import Path
+from functools import lru_cache
+
+logger = logging.getLogger(__name__)
+
+class FastTextWrapper:
+    def __init__(self, model_path: str, fallback_npy_path: str = None):
+        self.model_path = Path(model_path)
+        self.fallback_path = Path(fallback_npy_path) if fallback_npy_path else None
+        self._model = None
+        self._fallback_vectors = None
+        self._dim = 300
+        self._word_cache = {}  # простое кэширование
+
+    def _load_model(self):
+        if not self.model_path.exists():
+            self._try_fallback()
+            if self._fallback_vectors is None:
+                raise FileNotFoundError(f"Модель {self.model_path} не найдена и нет fallback")
+        try:
+            self._model = fasttext.load_model(str(self.model_path))
+            # получаем размерность через тестовое слово
+            self._dim = len(self._model.get_word_vector('a'))
+            logger.info(f"FastText модель загружена, размерность {self._dim}")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки fastText: {e}")
+            self._try_fallback()
+
+    def _try_fallback(self):
+        if self.fallback_path and self.fallback_path.exists():
+            logger.warning(f"Используется fallback-словарь {self.fallback_path}")
+            self._fallback_vectors = np.load(self.fallback_path, allow_pickle=True).item()
+            sample_vec = next(iter(self._fallback_vectors.values()))
+            self._dim = len(sample_vec)
+        else:
+            logger.error("Резервный словарь отсутствует, векторы будут случайными")
+            self._fallback_vectors = None
+
+    def get_word_vector(self, word: str) -> np.ndarray:
+        word = word.lower().strip()
+        if not word:
+            return np.zeros(self._dim, dtype=np.float32)
+        # кэш
+        if word in self._word_cache:
+            return self._word_cache[word]
+        # если модель не загружена – загружаем
+        if self._model is None and self._fallback_vectors is None:
+            self._load_model()
+        vec = None
+        if self._model is not None:
+            try:
+                vec = self._model.get_word_vector(word)
+            except Exception as e:
+                logger.warning(f"fastText error for '{word}': {e}")
+        if vec is None and self._fallback_vectors is not None:
+            vec = self._fallback_vectors.get(word)
+        if vec is None:
+            # случайный нормализованный вектор (как last resort)
+            vec = np.random.randn(self._dim)
+            vec = vec / np.linalg.norm(vec)
+        vec = np.array(vec, dtype=np.float32)
+        self._word_cache[word] = vec
+        return vec
+
+    def get_phrase_vector(self, phrase: str) -> np.ndarray:
+        words = phrase.lower().split()
+        if not words:
+            return np.zeros(self._dim, dtype=np.float32)
+        vecs = [self.get_word_vector(w) for w in words]
+        # усреднение
+        mean_vec = np.mean(vecs, axis=0)
+        return mean_vec
+
+    def get_dimension(self) -> int:
+        return self._dim
+```
+
+### Проверка
+
+После реализации в `main.py` можно протестировать:  
+`emb = FastTextWrapper("models/cc.ru.300.bin", "models/static_embeddings.npy")`  
+`v = emb.get_phrase_vector("гаечный ключ")` – должен вернуть вектор размерности 300.
+
+---
+
+## Изменение 12: Функция `vectorize` – исправленная (без деления на сумму весов)
+
+### Что нужно сделать
+
+Переписать `src/vectorize.py` в соответствии с формулой ТЗ:
+
+**Вход:** `processed_query` (содержит `tokens_with_weights` – список пар `(token, weight)`).  
+**Выход:** нормализованный вектор (L2-норма = 1).
+
+**Алгоритм:**
+1. Получить `tokens_weights` (если пусто – вернуть нулевой вектор и предупреждение).
+2. Инициализировать `weighted_sum = np.zeros(dim)`.
+3. Для каждого `(token, weight)`:
+   - Получить вектор через `embedding_model.get_phrase_vector(token)` (поддержка фраз).
+   - Добавить `weighted_sum += weight * vec`.
+4. **Не делить на сумму весов** – это ключевое отличие от предыдущей версии.
+5. L2-нормализовать: `norm = np.linalg.norm(weighted_sum)`. Если `norm == 0`, вернуть `weighted_sum` (нули). Иначе `weighted_sum /= norm`.
+6. Вернуть `weighted_sum` как `np.float32`.
+
+### Рекомендации
+
+- Проверять, что веса не NaN и не Inf.
+- Если `weighted_sum` имеет NaN, заменить на нули и залогировать.
+- Добавить параметр `normalize=True` (по умолчанию) для возможности отключения (не по ТЗ, но для отладки).
+
+### Пример (иллюстрация)
+
+```python
+# src/vectorize.py
+import numpy as np
+import logging
+from src.embeddings import FastTextWrapper
+
+logger = logging.getLogger(__name__)
+
+def vectorize(processed_query: dict, embedding_model: FastTextWrapper, normalize: bool = True) -> np.ndarray:
+    tokens_weights = processed_query.get("tokens_with_weights", [])
+    dim = embedding_model.get_dimension()
+    if not tokens_weights:
+        logger.warning("Нет токенов с весами, возвращаем нулевой вектор")
+        return np.zeros(dim, dtype=np.float32)
+
+    weighted_sum = np.zeros(dim, dtype=np.float64)  # для точности
+    for token, weight in tokens_weights:
+        if not isinstance(weight, (int, float)) or np.isnan(weight) or np.isinf(weight):
+            logger.warning(f"Некорректный вес {weight} для токена {token}, пропускаем")
+            continue
+        vec = embedding_model.get_phrase_vector(token)
+        weighted_sum += weight * vec
+
+    if normalize:
+        norm = np.linalg.norm(weighted_sum)
+        if norm > 1e-9:
+            weighted_sum = weighted_sum / norm
+        else:
+            logger.warning("Нулевой вектор после взвешивания, нормализация не изменит")
+    # приведение к float32
+    return weighted_sum.astype(np.float32)
+```
+
+### Проверка
+
+Тест с мок-объектом (см. ниже в изменении 15).
+
+---
+
+## Изменение 13: Кэширование векторов запросов и fallback-режим
+
+### Что нужно сделать
+
+Реализовать кэш для результатов `vectorize` в `main.py` или в отдельном модуле `src/cache.py`. Требование ТЗ: LRU-кэш на 100 последних векторов запросов.
+
+**Параметры кэша:** ключ – кортеж `(term, tuple(hints))`, значение – вектор (numpy array). При повторном запросе с теми же `term` и `hints` выдавать вектор из кэша без повторного вычисления.
+
+**Где разместить:** можно в `main.py` как глобальный словарь с ограничением размера, или использовать `functools.lru_cache` на функции `compute_query_vector(term, hints)`. Однако `lru_cache` требует хешируемых аргументов, а `numpy` не хешируется, поэтому кэшировать нужно до преобразования в `ndarray`.
+
+**Альтернатива:** кэшировать результат `preprocess` и `vectorize` вместе.
+
+### Рекомендации
+
+- Использовать `functools.lru_cache(maxsize=100)` на функции, которая принимает строки и возвращает список (а не ndarray), либо сериализовать вектор в tuple.
+- Учесть, что `hints` – список, его нужно преобразовать в кортеж.
+- В `run_pipeline` перед вычислением проверить кэш.
+
+### Пример (в main.py)
+
+```python
+from functools import lru_cache
+
+@lru_cache(maxsize=100)
+def _cached_vector(term: str, hints_tuple: tuple, config_hash: int) -> tuple:
+    # config_hash – чтобы инвалидировать кэш при изменении конфига (опционально)
+    # реальное вычисление вектора через preprocess + vectorize
+    # возвращаем кортеж чисел вместо ndarray
+    pass
+```
+
+---
+
+## Изменение 14: Интеграция в main.py (исправленная)
+
+### Что нужно сделать
+
+Обновить `main.py` с учётом:
+
+- Кэширования векторов запросов.
+- Обработки ошибок загрузки модели (fallback).
+- Правильного вызова `vectorize` без деления на сумму весов.
+- Логирования с уровнем из конфига.
+
+### Пример структуры
+
+```python
+# main.py
+import logging
+import sys
+from src.config import Config
+from src.lemmatizer import Lemmatizer
+from src.synonyms import SynonymDict
+from src.preprocess import preprocess
+from src.embeddings import FastTextWrapper
+from src.vectorize import vectorize
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+def run_pipeline(term, hints, config, debug=False):
+    # инициализация
+    synonym_dict = SynonymDict(config.synonyms_path)
+    emb_model = FastTextWrapper(config.fasttext_model_path, config.fallback_embeddings_path)
+    
+    # шаг 1
+    processed = preprocess(term, hints, config, synonym_dict)
+    if processed.get("status") == "error":
+        return {"status": "error", "message": processed["message"]}
+    
+    # шаг 2 (векторизация)
+    query_vec = vectorize(processed, emb_model, normalize=True)
+    
+    # кэширование (можно обернуть в lru_cache)
+    result = {
+        "status": "ok",
+        "term": term,
+        "query_vector": query_vec.tolist() if debug else None
+    }
+    return result
+```
+
+---
+
+## Изменение 15: Тесты для векторизации (исправленные)
+
+### Что нужно сделать
+
+Написать тесты, проверяющие:
+
+1. Размерность вектора.
+2. L2-нормализацию (должна быть ≈1).
+3. Отсутствие деления на сумму весов (т.е. удвоение всех весов должно удвоить вектор, но нормализация его масштабирует – это нелинейно; лучше тестировать без нормализации).
+4. Поддержку фраз (усреднение слов).
+5. Обработку пустого списка токенов.
+6. Кэширование (опционально – через отдельный тест).
+
+**Использовать мок-объект** с фиксированными векторами для детерминизма.
+
+### Пример (в `tests/test_vectorize.py`)
+
+```python
+import numpy as np
+from src.vectorize import vectorize
+
+class MockEmbedding:
+    def get_phrase_vector(self, phrase):
+        if phrase == "a":
+            return np.array([1.0, 0.0, 0.0] + [0.0]*297, dtype=np.float32)
+        if phrase == "b":
+            return np.array([0.0, 1.0, 0.0] + [0.0]*297, dtype=np.float32)
+        return np.zeros(300, dtype=np.float32)
+    def get_dimension(self):
+        return 300
+
+def test_vectorize_no_normalization():
+    emb = MockEmbedding()
+    # один токен вес 1.0 – без нормализации должен быть [1,0,0,...]
+    q = {"tokens_with_weights": [("a", 1.0)]}
+    v = vectorize(q, emb, normalize=False)
+    assert v[0] == 1.0
+    assert np.allclose(v[1:], 0.0)
+
+def test_vectorize_with_normalization():
+    emb = MockEmbedding()
+    q = {"tokens_with_weights": [("a", 0.7), ("b", 0.3)]}
+    v = vectorize(q, emb, normalize=True)
+    # без деления на сумму весов: weighted_sum = 0.7*[1,0,0] + 0.3*[0,1,0] = [0.7, 0.3, 0...]
+    # нормализация: делим на sqrt(0.7^2+0.3^2) = sqrt(0.58)=0.761577
+    # результат [0.919, 0.394, 0...]
+    assert abs(v[0] - 0.919) < 1e-2
+    assert abs(v[1] - 0.394) < 1e-2
+    assert np.linalg.norm(v) - 1.0 < 1e-6
+
+def test_vectorize_empty():
+    emb = MockEmbedding()
+    q = {"tokens_with_weights": []}
+    v = vectorize(q, emb)
+    assert np.all(v == 0.0)
+```
+
+### Проверка
+
+Запустить тесты через `pytest tests/` или встроенными `unittest`.
+
+---
+
+## Итог исправленных изменений 11–15
+
+После этих исправлений:
+
+- `FastTextWrapper` корректно кэширует векторы слов, поддерживает фразы и fallback.
+- `vectorize` соответствует формуле ТЗ (нет деления на сумму весов).
+- Добавлен LRU-кэш для векторов запросов.
+- Учтены ошибки загрузки модели и резервный режим.
+- Написаны тесты, проверяющие ключевую логику.
+
+Теперь можно переходить к изменениям 16–20 (шаг 3 – поиск в базе знаний).

@@ -1,0 +1,546 @@
+# Инструкция для Qwen Coder: реализация изменений 16–19 (ПОДРОБНАЯ ВЕРСИЯ)
+
+## Общие замечания перед началом
+
+- Предполагается, что изменения 1–15 уже реализованы: есть конфигурация `Config`, лемматизатор `Lemmatizer`, синонимы `SynonymDict`, векторизатор `FastTextWrapper` с методами `get_word_vector` и `get_phrase_vector`, функция `vectorize`. Если какого-то компонента нет, остановитесь и реализуйте его.
+- Все файлы создаются в директории `src/` или `scripts/`. Убедитесь, что структура папок существует (см. изменение 1).
+- Все пути к файлам (БД, шаблоны) должны загружаться из `config.json`. Добавьте недостающие поля в конфиг, если их нет: `"db_path": "data/knowledge_base.db"`, `"domain_templates_path": "configs/domain_templates.json"`, `"fallback_embeddings_path": "models/static_embeddings.npy"` (опционально).
+- Используйте `logging` для всех значимых действий. В каждом модуле создавайте логгер: `logger = logging.getLogger(__name__)`. В `main.py` настройте `logging.basicConfig(level=getattr(logging, config.log_level.upper()))`.
+- Все примеры кода – для понимания, не копируйте их слепо, но вы можете использовать подобную структуру.
+
+---
+
+## Изменение 16: Скрипт инициализации базы данных (init_db)
+
+### Что нужно сделать
+Создать скрипт `scripts/init_db.py`, который по пути из конфигурации создаёт SQLite‑базу с таблицами `concepts`, `parameters`, `metadata`, индексами и записью версии схемы.
+
+### Детальные шаги
+
+1. **Создайте папку `scripts/` в корне проекта**, если её нет.
+
+2. **Создайте файл `scripts/init_db.py`**.
+
+3. **В начале файла добавьте необходимые импорты**:
+   ```python
+   import sqlite3
+   from pathlib import Path
+   import sys
+   sys.path.append(str(Path(__file__).parent.parent))  # чтобы импортировать src
+   from src.config import Config
+   ```
+
+4. **Определите функцию `init_db(db_path: str) -> None`**:
+   - **Проверка и создание родительской папки**:  
+     `Path(db_path).parent.mkdir(parents=True, exist_ok=True)`
+   - **Подключение к базе**: `conn = sqlite3.connect(db_path)`
+   - **Включение внешних ключей**: `conn.execute("PRAGMA foreign_keys = ON")`
+   - **Создание таблицы `concepts`**:
+     ```sql
+     CREATE TABLE IF NOT EXISTS concepts (
+         id TEXT PRIMARY KEY,
+         term TEXT NOT NULL,
+         domain TEXT,
+         embedding BLOB,
+         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+     )
+     ```
+   - **Создание таблицы `parameters`**:
+     ```sql
+     CREATE TABLE IF NOT EXISTS parameters (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         concept_id TEXT REFERENCES concepts(id) ON DELETE CASCADE,
+         name TEXT,
+         label_ru TEXT,
+         type TEXT CHECK(type IN ('string','integer','float','boolean','enum')),
+         description TEXT,
+         unit TEXT,
+         enum_values TEXT
+     )
+     ```
+   - **Создание таблицы `metadata` для версионирования**:
+     ```sql
+     CREATE TABLE IF NOT EXISTS metadata (
+         key TEXT PRIMARY KEY,
+         value TEXT
+     )
+     ```
+   - **Запись версии схемы**:  
+     `conn.execute("INSERT OR IGNORE INTO metadata (key, value) VALUES ('schema_version', '1')")`
+   - **Создание индексов** (ускорение запросов):
+     ```sql
+     CREATE INDEX IF NOT EXISTS idx_concepts_domain ON concepts(domain);
+     CREATE INDEX IF NOT EXISTS idx_parameters_concept_id ON parameters(concept_id);
+     ```
+   - **Фиксация изменений** и **закрытие соединения**:  
+     `conn.commit(); conn.close()`
+
+5. **Добавьте блок для самостоятельного запуска**:
+   ```python
+   if __name__ == "__main__":
+       config = Config.from_json("configs/config.json")
+       init_db(config.db_path)
+       print(f"База данных инициализирована: {config.db_path}")
+   ```
+
+### Пояснения
+- `PRAGMA foreign_keys = ON` гарантирует, что при удалении понятия все его параметры удалятся автоматически (благодаря `ON DELETE CASCADE`).
+- Таблица `metadata` нужна для будущих миграций – если изменится структура БД, можно будет проверить версию и выполнить обновление.
+- Индексы не обязательны для 10–20 понятий, но для масштабирования полезны.
+
+### Проверка
+Запустите скрипт: `python scripts/init_db.py`. Убедитесь, что файл `data/knowledge_base.db` создан. Можно открыть его командой `sqlite3 data/knowledge_base.db .tables` – должны появиться `concepts`, `parameters`, `metadata`.
+
+---
+
+## Изменение 17: Скрипт наполнения тестовыми данными (seed)
+
+### Цель
+Добавить в базу несколько понятий-примеров с их параметрами. Эмбеддинги пока сгенерировать случайными (нормализованными), чтобы поиск мог работать до того, как мы пересчитаем реальные векторы через fastText.
+
+### Детальные шаги
+
+1. **Создайте файл `scripts/seed_data.py`**.
+
+2. **Импорты**:
+   ```python
+   import sqlite3
+   import numpy as np
+   from pathlib import Path
+   import sys
+   sys.path.append(str(Path(__file__).parent.parent))
+   from src.config import Config
+   import logging
+   logging.basicConfig(level=logging.INFO)
+   logger = logging.getLogger(__name__)
+   ```
+
+3. **Функция `seed(config: Config, force: bool = False)`**:
+   - **Подключение к БД**: `conn = sqlite3.connect(config.db_path)`
+   - **Проверка на существующие данные** (если `force=False`):
+     ```python
+     cursor = conn.cursor()
+     cursor.execute("SELECT COUNT(*) FROM concepts")
+     if cursor.fetchone()[0] > 0:
+         logger.info("База уже содержит данные. Пропускаем seed. Используйте force=True для перезаписи.")
+         conn.close()
+         return
+     ```
+   - **Если `force=True`, очистить таблицы**:
+     ```python
+     cursor.execute("DELETE FROM parameters")
+     cursor.execute("DELETE FROM concepts")
+     ```
+   - **Вспомогательная функция для генерации случайного нормализованного вектора**:
+     ```python
+     def random_embedding():
+         vec = np.random.randn(300).astype('<f4')
+         vec /= np.linalg.norm(vec)
+         return vec.tobytes()
+     ```
+     (Важно: фиксированный порядок байт little-endian, чтобы БД была переносимой.)
+
+   - **Вставка понятий** (список кортежей, затем `executemany`):
+     ```python
+     concepts = [
+         ("concept_001", "ключ гаечный", "слесарный инструмент", random_embedding()),
+         ("concept_002", "ключ разводной", "слесарный инструмент", random_embedding()),
+         ("concept_003", "ключ скрипичный", "музыка", random_embedding()),
+     ]
+     cursor.executemany(
+         "INSERT OR IGNORE INTO concepts (id, term, domain, embedding) VALUES (?, ?, ?, ?)",
+         concepts
+     )
+     ```
+
+   - **Вставка параметров**:
+     ```python
+     parameters = [
+         ("concept_001", "size_mm", "Размер в мм", "float", "Диаметр зева", "мм", None),
+         ("concept_001", "material", "Материал", "string", "Сталь, титан", None, None),
+         ("concept_002", "size_range_mm", "Диапазон размеров", "string", "От 6 до 24 мм", None, None),
+         ("concept_002", "material", "Материал", "string", "Хромованадиевая сталь", None, None),
+         ("concept_003", "clef_type", "Тип ключа", "enum", "Нотный ключ", None, '["скрипичный","басовый","альтовый"]'),
+     ]
+     cursor.executemany("""
+         INSERT OR IGNORE INTO parameters 
+         (concept_id, name, label_ru, type, description, unit, enum_values)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+     """, parameters)
+     ```
+
+   - **Фиксация и закрытие**: `conn.commit(); conn.close()`
+
+4. **Добавьте блок `if __name__ == "__main__"`**:
+   ```python
+   if __name__ == "__main__":
+       config = Config.from_json("configs/config.json")
+       seed(config, force=True)   # при первом запуске force=True
+   ```
+
+### Пояснения
+- Случайные векторы нужны, чтобы поиск возвращал ненулевые similarity (но они будут бессмысленными до пересчёта). Позже мы вызовем `update_all_embeddings`.
+- `INSERT OR IGNORE` защищает от дублирования при повторном запуске без `force`.
+- Параметры содержат все поля, определённые в ТЗ: `name` (snake_case), `label_ru`, `type`, `description`, `unit`, `enum_values` (как JSON-строка).
+
+### Проверка
+Запустите `python scripts/seed_data.py`. Затем выполните `sqlite3 data/knowledge_base.db "SELECT COUNT(*) FROM concepts"` – должно быть 3.
+
+---
+
+## Изменение 18: Класс KnowledgeBase для доступа к данным
+
+### Цель
+Создать удобную обёртку над SQLite, которая:
+- Загружает все понятия с их параметрами одним запросом (без N+1).
+- Десериализует эмбеддинги (BLOB → numpy) и enum_values (JSON → list).
+- Предоставляет метод `compute_concept_embedding` для вычисления вектора понятия по его термину (с учётом синонимов, по правилам из ТЗ).
+- Позволяет пересчитать эмбеддинги всех понятий (`update_all_embeddings`).
+
+### Детальные шаги
+
+1. **Создайте файл `src/knowledge_base.py`**.
+
+2. **Импорты**:
+   ```python
+   import sqlite3
+   import numpy as np
+   import json
+   import logging
+   from typing import List, Dict, Optional, Any
+   from pathlib import Path
+   from src.lemmatizer import Lemmatizer
+   from src.synonyms import SynonymDict
+   from src.embeddings import FastTextWrapper
+   ```
+
+3. **Определите класс `KnowledgeBase`**:
+
+   **3.1. Метод `__init__`**:
+   ```python
+   def __init__(self, db_path: str, embedding_model: Optional[FastTextWrapper] = None,
+                synonym_dict: Optional[SynonymDict] = None):
+       self.conn = sqlite3.connect(db_path)
+       self.conn.row_factory = sqlite3.Row
+       self.embedding_model = embedding_model
+       self.synonym_dict = synonym_dict
+       self._lemmatizer = Lemmatizer()   # синглтон
+       self._cache = None                # кэш для get_all_concepts
+       self.logger = logging.getLogger(__name__)
+   ```
+
+   **3.2. Метод `_blob_to_vector(self, blob: bytes) -> np.ndarray`**:
+   - Если `blob is None`, вернуть `np.zeros(300, dtype=np.float32)`.
+   - Преобразовать: `vec = np.frombuffer(blob, dtype='<f4')`.  
+     (Важно: `'<f4'` – little-endian float32, фиксирует порядок байт.)
+   - Если `len(vec) != 300`, записать предупреждение и вернуть нули.
+   - Вернуть копию: `vec.copy()`.
+
+   **3.3. Метод `_parse_enum(self, value: Optional[str]) -> Optional[List[str]]`**:
+   - Если `value` – None или пустая строка, вернуть None.
+   - Попытаться выполнить `json.loads(value)`. Если ошибка – залогировать и вернуть None.
+   - Вернуть результат.
+
+   **3.4. Метод `get_all_concepts(self, use_cache: bool = True) -> List[Dict[str, Any]]`**:
+   - Если `use_cache` и `self._cache` не пуст, вернуть `self._cache`.
+   - Выполнить SQL-запрос с LEFT JOIN:
+     ```sql
+     SELECT c.id, c.term, c.domain, c.embedding,
+            p.name, p.label_ru, p.type, p.description, p.unit, p.enum_values
+     FROM concepts c
+     LEFT JOIN parameters p ON c.id = p.concept_id
+     ORDER BY c.id, p.id
+     ```
+   - Пройти по всем строкам, собрать в словарь:
+     ```python
+     concepts_dict = {}
+     for row in cursor:
+         cid = row['id']
+         if cid not in concepts_dict:
+             concepts_dict[cid] = {
+                 'id': cid,
+                 'term': row['term'],
+                 'domain': row['domain'],
+                 'embedding': self._blob_to_vector(row['embedding']),
+                 'parameters': []
+             }
+         if row['name'] is not None:  # есть параметр
+             param = {
+                 'name': row['name'],
+                 'label_ru': row['label_ru'],
+                 'type': row['type'],
+                 'description': row['description'] or '',
+                 'unit': row['unit'],
+                 'enum_values': self._parse_enum(row['enum_values']),
+                 'confidence': 1.0,       # временное значение, будет пересчитано при агрегации
+                 'source': 'knowledge_base'
+             }
+             concepts_dict[cid]['parameters'].append(param)
+     ```
+   - Преобразовать словарь в список: `list(concepts_dict.values())`.
+   - Если `use_cache`, сохранить в `self._cache`.
+   - Вернуть список.
+
+   **3.5. Метод `compute_concept_embedding(self, term: str) -> np.ndarray`**:
+   - **Проверка**: если `self.embedding_model` или `self.synonym_dict` отсутствуют, поднять исключение `RuntimeError`.
+   - Получить леммы терма: `lemmas = self._lemmatizer.lemmatize_phrase(term)`. Если список пуст, вернуть нулевой вектор.
+   - **Веса для слов терма**: каждое слово получает вес `0.7 / len(lemmas)`. Добавить в список `tokens_weights` кортежи `(lemma, weight)`.
+   - **Сбор синонимов**: создать пустое множество `synonyms_set`. Для каждой леммы из `lemmas` вызвать `self.synonym_dict.get_synonyms(lemma, max_synonyms=2)` и добавить синонимы в множество.
+   - **Если есть синонимы**: вычислить `syn_weight = 0.3 / len(synonyms_set)`. Для каждого синонима добавить `(syn, syn_weight)` в `tokens_weights`.
+   - **Взвешенная сумма векторов**:
+     ```python
+     weighted_sum = np.zeros(300, dtype=np.float64)
+     for token, w in tokens_weights:
+         vec = self.embedding_model.get_phrase_vector(token)
+         weighted_sum += w * vec
+     ```
+   - **L2-нормализация**:
+     ```python
+     norm = np.linalg.norm(weighted_sum)
+     if norm > 1e-9:
+         weighted_sum = weighted_sum / norm
+     else:
+         self.logger.warning(f"Нулевой вектор для термина '{term}'")
+     ```
+   - Вернуть `weighted_sum.astype('<f4')`.
+
+   **3.6. Метод `update_all_embeddings(self) -> None`**:
+   - Проверить наличие `embedding_model` и `synonym_dict`, иначе выбросить исключение.
+   - Получить список всех понятий: `cursor.execute("SELECT id, term FROM concepts")`.
+   - Для каждой строки:
+     - Вычислить эмбеддинг через `compute_concept_embedding(term)`.
+     - Выполнить `UPDATE concepts SET embedding = ? WHERE id = ?` с `vec.tobytes()`.
+   - Сделать `conn.commit()`.
+   - Сбросить кэш: `self._cache = None`.
+   - Залогировать количество обновлённых понятий.
+
+   **3.7. Метод `close(self) -> None`**: закрыть `self.conn`.
+
+4. **Тестовый блок в конце файла** (опционально):
+   ```python
+   if __name__ == "__main__":
+       from src.config import Config
+       config = Config.from_json("configs/config.json")
+       # нужно подготовить embedding_model и synonym_dict, но для теста можно передать None
+       kb = KnowledgeBase(config.db_path)
+       concepts = kb.get_all_concepts()
+       print(f"Загружено {len(concepts)} понятий")
+       if concepts:
+           print(concepts[0]['term'], len(concepts[0]['parameters']))
+       kb.close()
+   ```
+
+### Пояснения
+- Запрос с LEFT JOIN и последующая группировка в памяти эффективнее, чем N+1 отдельных запросов.
+- При вычислении эмбеддинга понятия используется та же логика, что и для запроса, но без подсказок: только термин и его синонимы с весами 0.7 и 0.3. Это обеспечивает консистентность поиска.
+- Метод `update_all_embeddings` должен вызываться после добавления новых понятий или после изменения модели fastText.
+
+### Проверка
+Создайте временный скрипт, который:
+- Инициализирует БД, выполняет seed.
+- Создаёт экземпляр `KnowledgeBase` с реальными `FastTextWrapper` и `SynonymDict`.
+- Вызывает `update_all_embeddings()`.
+- Затем загружает понятия и проверяет, что эмбеддинги не нулевые (норма близка к 1).
+
+---
+
+## Изменение 19: Поиск ближайших понятий и резервный режим (шаг 3)
+
+### Цель
+Реализовать функцию поиска (`search_similar_concepts`), которая по вектору запроса находит похожие понятия из БД, и систему шаблонных параметров (fallback), когда ничего не найдено.
+
+### Детальные шаги
+
+#### 19.1. Создание `src/search.py`
+
+1. **Файл `src/search.py`**:
+   ```python
+   import numpy as np
+   import logging
+   from typing import List, Dict
+   from src.knowledge_base import KnowledgeBase
+
+   logger = logging.getLogger(__name__)
+
+   def _search_with_threshold(query_vec: np.ndarray, concepts: List[Dict],
+                              threshold: float, max_candidates: int) -> List[Dict]:
+       results = []
+       for c in concepts:
+           sim = np.dot(query_vec, c['embedding'])
+           if sim >= threshold:
+               results.append({
+                   'concept_id': c['id'],
+                   'term': c['term'],
+                   'domain': c['domain'],
+                   'similarity': float(sim),
+                   'parameters': c['parameters']   # копия параметров (без изменений)
+               })
+       results.sort(key=lambda x: x['similarity'], reverse=True)
+       return results[:max_candidates]
+
+   def search_similar_concepts(query_vector: np.ndarray, kb: KnowledgeBase,
+                               min_confidence: float, max_candidates: int = 20) -> List[Dict]:
+       # Защита от нулевого вектора
+       norm_q = np.linalg.norm(query_vector)
+       if norm_q < 1e-6:
+           logger.warning("Вектор запроса нулевой. Возвращаем все понятия с similarity=0.0")
+           concepts = kb.get_all_concepts()
+           return [{
+               'concept_id': c['id'],
+               'term': c['term'],
+               'domain': c['domain'],
+               'similarity': 0.0,
+               'parameters': c['parameters']
+           } for c in concepts][:max_candidates]
+
+       # Нормализуем на всякий случай
+       query_vector = query_vector / norm_q
+
+       concepts = kb.get_all_concepts()
+       if not concepts:
+           logger.warning("База знаний пуста")
+           return []
+
+       results = _search_with_threshold(query_vector, concepts, min_confidence, max_candidates)
+       if len(results) < 3 and min_confidence > 0.2:
+           logger.info(f"Найдено только {len(results)} кандидатов, снижаем порог до 0.2")
+           results = _search_with_threshold(query_vector, concepts, 0.2, max_candidates)
+
+       logger.info(f"Поиск завершён: {len(results)} кандидатов")
+       return results
+   ```
+
+#### 19.2. Создание файла шаблонов `configs/domain_templates.json`
+
+Создайте файл со следующим содержимым (это будет загружаться в `fallback.py`):
+```json
+{
+    "музыка": {
+        "domain": "музыка",
+        "parameters": [
+            {"name": "genre", "label_ru": "Жанр", "type": "string", "description": "Музыкальное направление"},
+            {"name": "composer", "label_ru": "Композитор", "type": "string", "description": "Автор произведения"}
+        ]
+    },
+    "техника": {
+        "domain": "техника",
+        "parameters": [
+            {"name": "power_source", "label_ru": "Источник энергии", "type": "string", "description": "Ручной, электрический, пневматический"},
+            {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал изготовления"}
+        ]
+    }
+}
+```
+
+#### 19.3. Создание `src/fallback.py`
+
+**Назначение**: определить предметную область по ключевым словам и выдать шаблонные параметры.
+
+**Шаги**:
+1. Импорты: `json`, `logging`, `Path`.
+2. Определить функцию `load_templates(templates_path: str) -> dict` (загружает JSON, при ошибке возвращает пустой словарь и логирует).
+3. Определить функцию `detect_domain(term_lemmas: List[str], hints_lemmas: List[List[str]]) -> str`:
+   - Объединить все леммы терма и подсказок в одно множество.
+   - Заранее определить словарь ключевых слов (можно захардкодить):
+     ```python
+     KEYWORDS = {
+         "музыка": ["музык", "нот", "скрипич", "бас", "аккорд"],
+         "техника": ["техник", "инструмент", "механизм", "прибор", "устройств"]
+     }
+     ```
+   - Для каждого домена проверить, есть ли хотя бы одно ключевое слово среди лемм (точное вхождение, не подстрока). Для этого преобразовать леммы в строку с пробелами и искать слово с границами: `f" {lemma} " in f" {all_text} "`.
+   - Вернуть первый подходящий домен, иначе `"общее"`.
+4. Определить функцию `generate_template_response(term: str, hints: List[str], processed_query: dict, config) -> dict`:
+   - Извлечь `term_lemmas` и `hints_lemmas` из `processed_query`.
+   - Вызвать `detect_domain`.
+   - Загрузить шаблоны через `load_templates(config.domain_templates_path)` (путь добавить в конфиг).
+   - Получить параметры из шаблона: `templates.get(domain, {}).get("parameters", [])`.
+   - Для каждого параметра добавить поля `confidence=0.3` и `source="template"`.
+   - Сформировать ответ:
+     ```python
+     {
+         "status": "ok",
+         "term": term,
+         "selected_context": {"domain": domain, "confidence": 0.3},
+         "parameters": parameters,
+         "suggested_refinements": [],
+         "warnings": ["Термин не найден в базе знаний, параметры предложены на основе шаблона предметной области"]
+     }
+     ```
+5. В конце файла тестовый блок не требуется.
+
+#### 19.4. Интеграция в основной конвейер (обновление `main.py`)
+
+В файле `main.py` (или в функции `run_pipeline`) выполнить следующие шаги:
+
+1. **Инициализация компонентов** (должна быть уже, добавить только `KnowledgeBase`):
+   ```python
+   from src.knowledge_base import KnowledgeBase
+   from src.search import search_similar_concepts
+   from src.fallback import generate_template_response
+   ```
+
+2. **После получения вектора запроса (`query_vec`) и после `preprocess` (`processed`)**:
+   ```python
+   kb = KnowledgeBase(config.db_path, embedding_model, synonym_dict)
+   
+   # (Опционально) пересчитать эмбеддинги, если они ещё не настоящие
+   # Можно проверить, нулевые ли они, или сделать это отдельным скриптом.
+   # Для первого запуска нужно вызвать kb.update_all_embeddings() один раз.
+   # Здесь предполагаем, что эмбеддинги уже актуальны.
+
+   candidates = search_similar_concepts(query_vec, kb, config.min_confidence, config.max_candidates)
+   ```
+
+3. **Формирование ответа**:
+   ```python
+   if candidates:
+       # ВРЕМЕННОЕ РЕШЕНИЕ: берём первого кандидата. ПОЗЖЕ будет агрегация параметров (шаг 4)
+       best = candidates[0]
+       response = {
+           "status": "ok",
+           "term": term,
+           "selected_context": {"domain": best["domain"], "confidence": best["similarity"]},
+           "parameters": best["parameters"],   # параметры уже с полями name, label_ru, ...
+           "suggested_refinements": [],
+           "warnings": []
+       }
+   else:
+       response = generate_template_response(term, hints, processed, config)
+   ```
+
+4. **Вернуть `response`**.
+
+5. **Добавить в конфиг новое поле** (если ещё нет):
+   ```json
+   "domain_templates_path": "configs/domain_templates.json"
+   ```
+
+### Пояснения
+- Поиск использует скалярное произведение, так как векторы нормализованы (косинусное сходство).
+- Если найдено менее 3 кандидатов, порог снижается до 0.2 для расширения охвата.
+- Резервный режим не генерирует реальные параметры, а выдаёт общие шаблоны – это временное решение до реализации генеративного компонента.
+- В ответе из кандидатов пока отсутствует агрегация (объединение параметров из нескольких источников). Это будет сделано в следующей версии (шаг 4).
+
+### Проверка
+1. Запустите `main.py` с термином «ключ» и подсказками «техника вращение». Если эмбеддинги уже пересчитаны (через `update_all_embeddings`), поиск должен найти `concept_001` или `concept_002`. Ответ должен содержать параметры `size_mm` и `material`.
+2. Запустите с термином «симфония» (нет в БД) – должен сработать fallback и вернуться шаблон музыки.
+3. Запустите с термином «отвёртка» (нет в БД, нет в шаблонах) – должен вернуться шаблон «общее» (по умолчанию техника или пустые параметры).
+
+---
+
+## Дополнительные рекомендации после реализации изменений 16–19
+
+1. **Создайте скрипт полной настройки `scripts/setup.py`**, который последовательно вызывает:
+   - `init_db()`
+   - `seed()`
+   - создание `KnowledgeBase`, вызов `update_all_embeddings()`
+   Это обеспечит полностью рабочую базу с реальными эмбеддингами.
+
+2. **Добавьте логирование** во все модули, чтобы видеть процесс поиска и возможные ошибки.
+
+3. **Протестируйте поиск** с разными запросами, убедитесь, что similarity корректно отражает семантическую близость.
+
+4. **Задокументируйте** формат выходных данных и возможные коды ошибок.
+
+Теперь инструкция готова. Вы можете приступать к реализации изменений в указанном порядке.

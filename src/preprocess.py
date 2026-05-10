@@ -3,10 +3,15 @@
 Предоставляет функции для лемматизации, очистки и расширения токенов.
 """
 
-import re
+import logging
 from typing import Optional
 
 from pymorphy3 import MorphAnalyzer
+
+from src.lemmatizer import Lemmatizer
+from src.text_cleaner import clean_text
+
+logger = logging.getLogger(__name__)
 
 # Статический словарь синонимов (загружается из файла при необходимости)
 # Формат: {"лемма": [{"syn": "синоним", "weight": 0.4}, ...]}
@@ -40,81 +45,14 @@ def load_synonyms(synonyms_path: str) -> dict[str, list[dict[str, float | str]]]
     return SYNONYMS
 
 
-def clean_text(text: str) -> str:
-    """Очистить текст от ненужных символов.
-
-    Оставляет только буквы, цифры и дефис.
-
-    Args:
-        text: Исходный текст.
-
-    Returns:
-        Очищенный текст.
-    """
-    # Удаляем все, кроме букв, цифр и дефиса
-    return re.sub(r"[^a-zA-Zа-яА-Я0-9\-]", "", text)
-
-
-def lemmatize(token: str, morph: MorphAnalyzer) -> str:
-    """Лемматизировать одно слово.
-
-    Args:
-        token: Исходное слово.
-        morph: Экземпляр MorphAnalyzer.
-
-    Returns:
-        Лемма (нормальная форма слова).
-    """
-    if not token:
-        return token
-
-    # Лемматизация
-    parsed = morph.parse(token)
-    if parsed:
-        return parsed[0].normal_form
-
-    return token
-
-
-def expand_with_synonyms(
-    tokens: list[str], synonyms: dict[str, list[dict[str, float | str]]], morph: MorphAnalyzer
-) -> list[tuple[str, float]]:
-    """Расширить токены синонимами.
-
-    Args:
-        tokens: Список исходных токенов.
-        synonyms: Словарь синонимов.
-        morph: Экземпляр MorphAnalyzer для лемматизации синонимов.
-
-    Returns:
-        Список кортежей (токен, вес).
-    """
-    result: list[tuple[str, float]] = []
-
-    for token in tokens:
-        # Оригинальный токен с весом 1.0
-        result.append((token, 1.0))
-
-        # Синонимы с понижающим весом 0.4
-        if token in synonyms:
-            for syn_info in synonyms[token]:
-                syn_word = syn_info.get("syn", "")
-                if syn_word:
-                    # Лемматизируем синоним
-                    syn_lemma = lemmatize(syn_word, morph)
-                    result.append((syn_lemma, 0.4))
-
-    return result
-
-
 def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
     """Предобработать входные данные.
 
     Выполняет:
     1. Валидацию термина
-    2. Очистку текста
-    3. Лемматизацию
-    4. Расширение синонимами
+    2. Очистку текста (с проверкой длины)
+    3. Лемматизацию через Lemmatizer
+    4. Удаление дубликатов подсказок
 
     Args:
         term: Анализируемый термин.
@@ -122,13 +60,18 @@ def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
 
     Returns:
         dict: Словарь с подготовленными данными:
-            - tokens: list[tuple[str, float]] - токены с весами
-            - term_lemma: str - лемма термина
-            - hint_lemmas: list[str] - леммы подсказок
-            - warnings: list[str] - предупреждения
+            - status: "ok" или "error"
+            - original_term: исходный термин
+            - original_hints: исходные подсказки
+            - clean_term: очищенный термин
+            - clean_hints: очищенные подсказки
+            - term_lemmas: список лемм термина
+            - hints_lemmas: список списков лемм для каждой подсказки
+            - all_lemmas: список всех лемм
+            - warnings: список предупреждений
 
-    Raises:
-        ValueError: Если термин пустой после очистки.
+    Note:
+        Если термин пустой после очистки, возвращается {"status": "error", "message": "..."}.
     """
     if hints is None:
         hints = []
@@ -137,45 +80,90 @@ def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
 
     # 1. Валидация термина
     if not term or not term.strip():
-        raise ValueError("Пустой термин. Введите значимое слово.")
+        return {
+            "status": "error",
+            "message": "Пустой термин. Введите значимое слово.",
+            "original_term": term,
+            "original_hints": hints,
+        }
 
-    # 2. Очистка и приведение к нижнему регистру
-    term_clean = clean_text(term.lower())
-    if not term_clean:
-        raise ValueError("Пустой термин после очистки.")
+    # 2. Очистка текста
+    clean_term = clean_text(term)
+    if not clean_term:
+        return {
+            "status": "error",
+            "message": "Пустой термин после очистки.",
+            "original_term": term,
+            "original_hints": hints,
+        }
 
     # Очистка подсказок
-    hints_clean = []
+    clean_hints = []
     for hint in hints:
         if hint and hint.strip():
-            hint_clean = clean_text(hint.lower())
+            hint_clean = clean_text(hint)
             if hint_clean:
-                hints_clean.append(hint_clean)
+                clean_hints.append(hint_clean)
 
     # Ограничение на 3 подсказки
-    if len(hints_clean) > 3:
-        hints_clean = hints_clean[:3]
+    if len(clean_hints) > 3:
         warnings.append("Подсказок больше 3, использованы первые 3")
+        clean_hints = clean_hints[:3]
 
-    # 3. Лемматизация
-    morph = MorphAnalyzer()
-    term_lemma = lemmatize(term_clean, morph)
+    # 3. Проверка максимальной длины
+    if len(clean_term) > 100:
+        return {
+            "status": "error",
+            "message": f"Термин слишком длинный (максимум 100 символов, получено {len(clean_term)})",
+            "original_term": term,
+            "original_hints": hints,
+        }
 
-    hint_lemmas = [lemmatize(h, morph) for h in hints_clean]
+    for i, hint in enumerate(clean_hints):
+        if len(hint) > 50:
+            warnings.append(f"Подсказка #{i + 1} слишком длинная (максимум 50 символов), обрезана")
+            clean_hints[i] = hint[:50]
 
-    # 4. Загрузка синонимов (если файл существует)
-    # Синонимы будут загружены при необходимости в следующих шагах
-    # Здесь просто возвращаем пустой список, синонимы добавятся при векторизации
+    # 4. Удаление дубликатов подсказок (сохраняя порядок)
+    original_hint_count = len(clean_hints)
+    clean_hints = list(dict.fromkeys(clean_hints))
+    if len(clean_hints) < original_hint_count:
+        logger.info(f"Удалены дубликаты подсказок: {original_hint_count} -> {len(clean_hints)}")
 
-    # 5. Формирование итоговых токенов с весами
-    # Оригинальные токены: термин + подсказки
-    tokens: list[tuple[str, float]] = [(term_lemma, 1.0)]
-    for h in hint_lemmas:
-        tokens.append((h, 1.0))
+    # 5. Лемматизация через Lemmatizer
+    lemmatizer = Lemmatizer()
+    term_lemmas = lemmatizer.lemmatize_phrase(clean_term)
+
+    if not term_lemmas:
+        return {
+            "status": "error",
+            "message": "Термин не содержит значимых слов после лемматизации",
+            "original_term": term,
+            "original_hints": hints,
+        }
+
+    # Лемматизация подсказок (каждая подсказка может содержать несколько слов)
+    hints_lemmas = []
+    for hint in clean_hints:
+        hint_lemmas = lemmatizer.lemmatize_phrase(hint)
+        if hint_lemmas:  # Пропускаем пустые результаты
+            hints_lemmas.append(hint_lemmas)
+
+    # 6. Сбор всех лемм
+    all_lemmas = term_lemmas.copy()
+    for hint_lemmas_list in hints_lemmas:
+        all_lemmas.extend(hint_lemmas_list)
+
+    logger.info(f"Предобработка завершена: term='{clean_term}', hints={clean_hints}")
 
     return {
-        "tokens": tokens,
-        "term_lemma": term_lemma,
-        "hint_lemmas": hint_lemmas,
+        "status": "ok",
+        "original_term": term,
+        "original_hints": hints,
+        "clean_term": clean_term,
+        "clean_hints": clean_hints,
+        "term_lemmas": term_lemmas,
+        "hints_lemmas": hints_lemmas,
+        "all_lemmas": all_lemmas,
         "warnings": warnings,
     }

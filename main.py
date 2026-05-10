@@ -9,12 +9,15 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 # Добавляем корень проекта в path для импортов
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import Config
 from src.preprocess import preprocess
+from src.vectorize import vectorize
 
 
 def process_term(input_data: dict) -> dict:
@@ -58,6 +61,16 @@ def process_term(input_data: dict) -> dict:
             "warnings": [str(e)],
         }
 
+    # Векторизация
+    try:
+        # Токены с весами из preprocess
+        tokens_with_weights = processed["tokens"]
+        query_vector = vectorize(tokens_with_weights)
+        vector_warnings = []
+    except Exception as e:
+        query_vector = np.zeros(300, dtype=np.float32)
+        vector_warnings = [f"Ошибка векторизации: {e}"]
+
     # Фиктивный ответ в соответствии со спецификацией
     response = {
         "status": "ok",
@@ -65,12 +78,12 @@ def process_term(input_data: dict) -> dict:
         "selected_context": {"domain": "не определено", "confidence": 0.0},
         "parameters": [],
         "suggested_refinements": [],
-        "warnings": preprocess_warnings + ["Алгоритм ещё не реализован"],
+        "warnings": preprocess_warnings + vector_warnings + ["Алгоритм ещё не реализован"],
     }
 
     if debug:
         response["debug_info"] = {
-            "query_vector": [0.0] * 10,
+            "query_vector": query_vector[:10].tolist(),  # Первые 10 значений
             "candidates_raw": [],
             "scores_distribution": [],
         }

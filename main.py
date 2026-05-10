@@ -47,8 +47,8 @@ def process_term(input_data: dict) -> dict:
     # Предобработка
     try:
         processed = preprocess(term, hints)
-        term_lemma = processed["term_lemma"]
-        hint_lemmas = processed["hint_lemmas"]
+        term_lemmas = processed["term_lemmas"]
+        hint_lemmas = processed["hints_lemmas"]
         preprocess_warnings = processed.get("warnings", [])
     except ValueError as e:
         return {
@@ -64,7 +64,7 @@ def process_term(input_data: dict) -> dict:
     # Векторизация
     try:
         # Токены с весами из preprocess
-        tokens_with_weights = processed["tokens"]
+        tokens_with_weights = processed["tokens_with_weights"]
         query_vector = vectorize(tokens_with_weights)
         vector_warnings = []
     except Exception as e:
@@ -74,7 +74,7 @@ def process_term(input_data: dict) -> dict:
     # Фиктивный ответ в соответствии со спецификацией
     response = {
         "status": "ok",
-        "term": term_lemma,
+        "term": " ".join(term_lemmas),
         "selected_context": {"domain": "не определено", "confidence": 0.0},
         "parameters": [],
         "suggested_refinements": [],

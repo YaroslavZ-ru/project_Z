@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import Config
+from src.preprocess import preprocess
 
 
 def process_term(input_data: dict) -> dict:
@@ -40,14 +41,31 @@ def process_term(input_data: dict) -> dict:
     hints = input_data.get("hints", [])
     debug = input_data.get("debug", False)
 
+    # Предобработка
+    try:
+        processed = preprocess(term, hints)
+        term_lemma = processed["term_lemma"]
+        hint_lemmas = processed["hint_lemmas"]
+        preprocess_warnings = processed.get("warnings", [])
+    except ValueError as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "term": term,
+            "selected_context": {"domain": "не определено", "confidence": 0.0},
+            "parameters": [],
+            "suggested_refinements": [],
+            "warnings": [str(e)],
+        }
+
     # Фиктивный ответ в соответствии со спецификацией
     response = {
         "status": "ok",
-        "term": term,
+        "term": term_lemma,
         "selected_context": {"domain": "не определено", "confidence": 0.0},
         "parameters": [],
         "suggested_refinements": [],
-        "warnings": ["Алгоритм ещё не реализован"],
+        "warnings": preprocess_warnings + ["Алгоритм ещё не реализован"],
     }
 
     if debug:
@@ -64,7 +82,7 @@ def main():
     """Основная точка входа."""
     # Пример входных данных
     test_input = {
-        "term": "ключ",
+        "term": "ключи",
         "hints": ["техника", "вращение"],
         "debug": False,
     }

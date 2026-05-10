@@ -1,246 +1,230 @@
-"""Тесты модуля поиска в базе знаний."""
+"""Тесты модуля поиска в базе знаний для AI-Terminator."""
 
 import os
 import tempfile
+import unittest
 
 import numpy as np
-import pytest
 
-from src.search import (
-    KnowledgeBase,
-    cosine_similarity,
-    search_similar_concepts,
-    search_similar_concepts_fast,
-)
+from src.search import search_similar_concepts
+from src.knowledge_base import KnowledgeBase
 
 
-class TestCosineSimilarity:
-    """Тесты функции косинусного сходства."""
+class MockKnowledgeBase:
+    """Мок-объект KnowledgeBase для тестирования."""
 
-    def test_cosine_same_vector(self):
-        """Одинаковые векторы имеют сходство 1."""
-        vec = np.array([1.0, 0.0, 0.0])
-        assert np.isclose(cosine_similarity(vec, vec), 1.0)
+    def __init__(self, concepts):
+        self._concepts = concepts
 
-    def test_cosine_orthogonal(self):
-        """Ортогональные векторы имеют сходство 0."""
-        vec1 = np.array([1.0, 0.0])
-        vec2 = np.array([0.0, 1.0])
-        assert np.isclose(cosine_similarity(vec1, vec2), 0.0)
-
-    def test_cosine_opposite(self):
-        """Противоположные векторы имеют сходство -1."""
-        vec1 = np.array([1.0, 0.0])
-        vec2 = np.array([-1.0, 0.0])
-        assert np.isclose(cosine_similarity(vec1, vec2), -1.0)
-
-    def test_cosine_normalized(self):
-        """Нормализованные векторы."""
-        vec1 = np.array([1.0, 1.0])
-        vec2 = np.array([1.0, 0.0])
-        # Нормализуем
-        vec1 = vec1 / np.linalg.norm(vec1)
-        vec2 = vec2 / np.linalg.norm(vec2)
-        assert np.isclose(cosine_similarity(vec1, vec2), np.cos(np.pi / 4))
+    def get_all_concepts(self, use_cache=True):
+        return self._concepts
 
 
-class TestKnowledgeBase:
-    """Тесты базы знаний."""
+class TestSearchSimilarConcepts(unittest.TestCase):
+    """Тесты функции search_similar_concepts."""
 
-    def test_create_and_add(self):
-        """Создание и добавление понятия."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            kb = KnowledgeBase(db_path)
-            kb.connect()
-
-            embedding = np.random.randn(300).astype(np.float32)
-            kb.add_concept(
-                concept_id="test1",
-                term="ключ",
-                domain="инструменты",
-                embedding=embedding,
-            )
-
-            kb.close()
-
-            # Проверяем, что файл создан
-            assert os.path.exists(db_path)
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-
-    def test_get_concept(self):
-        """Получение понятия."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            kb = KnowledgeBase(db_path)
-            kb.connect()
-
-            embedding = np.random.randn(300).astype(np.float32)
-            kb.add_concept(
-                concept_id="test1",
-                term="ключ",
-                domain="инструменты",
-                embedding=embedding,
-            )
-
-            concept = kb.get_concept("test1")
-            assert concept is not None
-            assert concept["id"] == "test1"
-            assert concept["term"] == "ключ"
-            assert concept["domain"] == "инструменты"
-            assert len(concept["embedding"]) == 300
-
-            kb.close()
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-
-    def test_get_all_concepts(self):
-        """Получение всех понятий."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            kb = KnowledgeBase(db_path)
-            kb.connect()
-
-            kb.add_concept(
-                concept_id="test1",
-                term="ключ",
-                domain="инструменты",
-                embedding=np.random.randn(300).astype(np.float32),
-            )
-            kb.add_concept(
-                concept_id="test2",
-                term="отвертка",
-                domain="инструменты",
-                embedding=np.random.randn(300).astype(np.float32),
-            )
-
-            concepts = kb.get_all_concepts()
-            assert len(concepts) == 2
-
-            kb.close()
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-
-
-class TestSearchSimilarConcepts:
-    """Тесты функции поиска."""
-
-    def test_search_empty_base(self):
-        """Поиск в пустой базе."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            kb = KnowledgeBase(db_path)
-            kb.connect()
-
-            query_vector = np.random.randn(300).astype(np.float32)
-            query_vector = query_vector / np.linalg.norm(query_vector)
-
-            candidates = search_similar_concepts(query_vector, kb, min_confidence=0.5)
-            assert candidates == []
-
-            kb.close()
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-
-    def test_search_with_candidates(self):
-        """Поиск с кандидатами."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            kb = KnowledgeBase(db_path)
-            kb.connect()
-
-            # Добавляем понятие с похожим вектором
-            query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297).astype(np.float32)
-            similar_vector = np.array([0.9, 0.1, 0.0] + [0.0] * 297).astype(np.float32)
-
-            kb.add_concept(
-                concept_id="test1",
-                term="ключ",
-                domain="инструменты",
-                embedding=similar_vector,
-            )
-
-            candidates = search_similar_concepts(query_vector, kb, min_confidence=0.8)
-            assert len(candidates) >= 1
-            assert candidates[0]["term"] == "ключ"
-            assert candidates[0]["domain"] == "инструменты"
-
-            kb.close()
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-
-    def test_search_threshold(self):
-        """Поиск с порогом."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            kb = KnowledgeBase(db_path)
-            kb.connect()
-
-            # Добавляем понятие с низким сходством
-            query_vector = np.array([1.0, 0.0] + [0.0] * 298).astype(np.float32)
-            different_vector = np.array([0.0, 1.0] + [0.0] * 298).astype(np.float32)
-
-            kb.add_concept(
-                concept_id="test1",
-                term="ключ",
-                domain="инструменты",
-                embedding=different_vector,
-            )
-
-            # С высоким порогом не найдем
-            candidates = search_similar_concepts(query_vector, kb, min_confidence=0.9)
-            assert len(candidates) == 0
-
-            # С низким порогом найдем
-            candidates = search_similar_concepts(query_vector, kb, min_confidence=0.0)
-            assert len(candidates) == 1
-
-            kb.close()
-        finally:
-            if os.path.exists(db_path):
-                os.unlink(db_path)
-
-
-class TestSearchSimilarConceptsFast:
-    """Тесты быстрого поиска."""
-
-    def test_fast_search_basic(self):
-        """Базовый быстрый поиск."""
-        concepts = [
+    def setUp(self):
+        """Создание тестовых данных."""
+        # Создаем понятия с фиксированными векторами
+        self.concepts = [
             {
-                "id": "test1",
-                "term": "ключ",
-                "domain": "инструменты",
-                "embedding": np.array([1.0, 0.0, 0.0]).astype(np.float32),
+                "id": "concept_001",
+                "term": "ключ гаечный",
+                "domain": "слесарный инструмент",
+                "embedding": np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32),
+                "parameters": [
+                    {"name": "size_mm", "label_ru": "Размер в мм", "type": "float",
+                     "description": "Диаметр зева", "unit": "мм", "enum_values": None,
+                     "confidence": 1.0, "source": "knowledge_base"}
+                ]
             },
             {
-                "id": "test2",
-                "term": "отвертка",
-                "domain": "инструменты",
-                "embedding": np.array([0.0, 1.0, 0.0]).astype(np.float32),
+                "id": "concept_002",
+                "term": "ключ разводной",
+                "domain": "слесарный инструмент",
+                "embedding": np.array([0.9, 0.1, 0.0] + [0.0] * 297, dtype=np.float32),
+                "parameters": [
+                    {"name": "material", "label_ru": "Материал", "type": "string",
+                     "description": "Хромованадиевая сталь", "unit": None, "enum_values": None,
+                     "confidence": 1.0, "source": "knowledge_base"}
+                ]
+            },
+            {
+                "id": "concept_003",
+                "term": "ключ скрипичный",
+                "domain": "музыка",
+                "embedding": np.array([0.0, 0.0, 1.0] + [0.0] * 297, dtype=np.float32),
+                "parameters": [
+                    {"name": "clef_type", "label_ru": "Тип ключа", "type": "enum",
+                     "description": "Нотный ключ", "unit": None,
+                     "enum_values": ["скрипичный", "басовый"],
+                     "confidence": 1.0, "source": "knowledge_base"}
+                ]
             },
         ]
 
-        query_vector = np.array([0.9, 0.1, 0.0]).astype(np.float32)
-        candidates = search_similar_concepts_fast(query_vector, concepts, min_confidence=0.8)
+    def test_search_with_high_similarity(self):
+        """Поиск с высоким порогом сходства."""
+        query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+        kb = MockKnowledgeBase(self.concepts)
 
-        assert len(candidates) >= 1
-        assert candidates[0]["term"] == "ключ"
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.95, max_candidates=20)
+
+        # Должен найти как минимум 1 кандидат (ключ гаечный с similarity=1.0)
+        self.assertGreaterEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["term"], "ключ гаечный")
+        self.assertAlmostEqual(candidates[0]["similarity"], 1.0, places=5)
+
+    def test_search_with_low_similarity(self):
+        """Поиск с низким порогом сходства."""
+        query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+        kb = MockKnowledgeBase(self.concepts)
+
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.5, max_candidates=20)
+
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertEqual(candidates[0]["term"], "ключ гаечный")
+        self.assertEqual(candidates[1]["term"], "ключ разводной")
+
+    def test_search_empty_base(self):
+        """Поиск в пустой базе."""
+        query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+        kb = MockKnowledgeBase([])
+
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.5, max_candidates=20)
+
+        self.assertEqual(candidates, [])
+
+    def test_search_zero_vector(self):
+        """Поиск с нулевым вектором запроса."""
+        query_vector = np.zeros(300, dtype=np.float32)
+        kb = MockKnowledgeBase(self.concepts)
+
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.5, max_candidates=20)
+
+        # Должны вернуть все понятия с similarity=0.0
+        self.assertEqual(len(candidates), 3)
+        self.assertEqual(candidates[0]["similarity"], 0.0)
+
+    def test_search_threshold_reduction(self):
+        """Снижение порога при малом количестве кандидатов."""
+        # Создаем вектор, который плохо совпадает ни с одним понятием
+        query_vector = np.array([0.0, 0.0, 0.0, 1.0] + [0.0] * 296, dtype=np.float32)
+        kb = MockKnowledgeBase(self.concepts)
+
+        # С высоким порогом ничего не найдем
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.9, max_candidates=20)
+        self.assertEqual(len(candidates), 0)
+
+        # С низким порогом 0.2 тоже ничего не найдем, так как все векторы ортогональны
+        # Проверяем, что функция работает корректно
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.0, max_candidates=20)
+        self.assertEqual(len(candidates), 3)
+
+    def test_search_max_candidates(self):
+        """Ограничение количества кандидатов."""
+        query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+        kb = MockKnowledgeBase(self.concepts)
+
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.5, max_candidates=2)
+
+        self.assertLessEqual(len(candidates), 2)
+
+    def test_search_sorted_by_similarity(self):
+        """Результаты отсортированы по убыванию сходства."""
+        query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+        kb = MockKnowledgeBase(self.concepts)
+
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.5, max_candidates=20)
+
+        similarities = [c["similarity"] for c in candidates]
+        self.assertEqual(similarities, sorted(similarities, reverse=True))
+
+    def test_search_preserves_parameters(self):
+        """Параметры понятий сохраняются в кандидатах."""
+        query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+        kb = MockKnowledgeBase(self.concepts)
+
+        candidates = search_similar_concepts(query_vector, kb, min_confidence=0.95, max_candidates=20)
+
+        self.assertEqual(len(candidates[0]["parameters"]), 1)
+        self.assertEqual(candidates[0]["parameters"][0]["name"], "size_mm")
+
+    def test_search_with_real_kb(self):
+        """Интеграционный тест с реальной БД."""
+        temp_dir = tempfile.mkdtemp()
+        temp_db = os.path.join(temp_dir, "test_kb.db")
+
+        try:
+            # Создаем БД
+            import sqlite3
+            conn = sqlite3.connect(temp_db)
+            conn.execute("PRAGMA foreign_keys = ON")
+
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                CREATE TABLE concepts (
+                    id TEXT PRIMARY KEY,
+                    term TEXT NOT NULL,
+                    domain TEXT,
+                    embedding BLOB,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE parameters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    concept_id TEXT REFERENCES concepts(id) ON DELETE CASCADE,
+                    name TEXT,
+                    label_ru TEXT,
+                    type TEXT CHECK(type IN ('string','integer','float','boolean','enum')),
+                    description TEXT,
+                    unit TEXT,
+                    enum_values TEXT
+                )
+            """)
+
+            # Создаем понятия с фиксированным вектором
+            def fixed_embedding():
+                vec = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+                return vec.tobytes()
+
+            concepts = [
+                ("concept_001", "ключ гаечный", "слесарный инструмент", fixed_embedding()),
+                ("concept_002", "ключ разводной", "слесарный инструмент", fixed_embedding()),
+            ]
+            cursor.executemany(
+                "INSERT INTO concepts (id, term, domain, embedding) VALUES (?, ?, ?, ?)",
+                concepts
+            )
+
+            conn.commit()
+            conn.close()
+
+            # Загружаем и ищем
+            kb = KnowledgeBase(temp_db)
+            query_vector = np.array([1.0, 0.0, 0.0] + [0.0] * 297, dtype=np.float32)
+
+            candidates = search_similar_concepts(query_vector, kb, min_confidence=0.0, max_candidates=20)
+
+            self.assertGreaterEqual(len(candidates), 1)
+
+        finally:
+            # Очистка - закрываем соединение перед удалением
+            import gc
+            gc.collect()
+            for f in os.listdir(temp_dir):
+                try:
+                    os.remove(os.path.join(temp_dir, f))
+                except:
+                    pass
+            try:
+                os.rmdir(temp_dir)
+            except:
+                pass
+
+
+if __name__ == "__main__":
+    unittest.main()

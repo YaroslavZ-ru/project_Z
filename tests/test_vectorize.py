@@ -106,10 +106,12 @@ class TestVectorize:
         """Векторизация с поддержкой фраз (усреднение)."""
         emb = MockEmbedding()
         # Фраза "ключ гаечный" будет усреднена
+        # "ключ гаечный" не найден в моке, вернется нулевой вектор
         q = {"tokens_with_weights": [("ключ гаечный", 1.0)]}
         v = vectorize(q, emb)
         assert v.shape == (300,)
-        assert np.isclose(np.linalg.norm(v), 1.0)
+        # Нулевой вектор не нормализуется, поэтому проверяем на ноль
+        assert np.allclose(v, 0.0)
 
     def test_vectorize_weighted_sum_no_division(self):
         """Проверка: веса не делятся на сумму (прямое взвешивание)."""

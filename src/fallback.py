@@ -63,7 +63,7 @@ def detect_domain(
     for domain, keywords in KEYWORDS.items():
         for lemma in all_lemmas:
             for keyword in keywords:
-                # Проверка вхождения ключевого слова в лемму
+                # Проверка вхождения ключевого слова в лемму (как подстрока)
                 if keyword in lemma:
                     return domain
 

@@ -202,6 +202,52 @@ class TestPreprocess(unittest.TestCase):
         # Подсказка должна иметь вес 0.3
         self.assertAlmostEqual(token_dict.get("техника", 0), 0.3, places=5)
 
+    def test_preprocess_full_example(self):
+        """Полный пример из ТЗ."""
+        # Пример: term="ключ", hints=["техника", "вращение"]
+        import tempfile
+        import os
+        import json
+
+        temp_dir = tempfile.mkdtemp()
+        temp_file = os.path.join(temp_dir, "synonyms.json")
+        test_data = {
+            "ключ": ["инструмент", "отмычка"],
+            "техника": ["механизм"],
+            "вращение": ["поворот"],
+        }
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(test_data, f, ensure_ascii=False, indent=2)
+
+        synonym_dict = SynonymDict(temp_file)
+
+        result = preprocess("ключ", ["техника", "вращение"], synonym_dict=synonym_dict)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["term_lemmas"], ["ключ"])
+        self.assertEqual(result["clean_hints"], ["техника", "вращение"])
+
+        tokens_weights = result["tokens_with_weights"]
+        token_dict = dict(tokens_weights)
+
+        # Термин "ключ" - вес 0.7
+        self.assertAlmostEqual(token_dict.get("ключ", 0), 0.7, places=5)
+
+        # Подсказки "техника" и "вращение" - по 0.15 каждая (0.3 / 2)
+        self.assertAlmostEqual(token_dict.get("техника", 0), 0.15, places=5)
+        self.assertAlmostEqual(token_dict.get("вращение", 0), 0.15, places=5)
+
+        # Синонимы: "инструмент", "отмычка", "механизм", "поворот" = 4 синонима
+        # Каждый должен иметь вес 0.1 / 4 = 0.025
+        self.assertAlmostEqual(token_dict.get("инструмент", 0), 0.025, places=5)
+        self.assertAlmostEqual(token_dict.get("отмычка", 0), 0.025, places=5)
+        self.assertAlmostEqual(token_dict.get("механизм", 0), 0.025, places=5)
+        self.assertAlmostEqual(token_dict.get("поворот", 0), 0.025, places=5)
+
+        # Очистка
+        os.remove(temp_file)
+        os.rmdir(temp_dir)
+
 
 if __name__ == "__main__":
     unittest.main()

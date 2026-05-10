@@ -40,9 +40,16 @@ class FastTextWrapper:
         self._dim: int = 300
         self._word_cache: dict[str, np.ndarray] = {}
         self._loaded = False
+        self._load_attempted = False  # Флаг, что проверка уже была выполнена
 
     def _load_model(self) -> None:
         """Загрузить fastText модель или переключиться на fallback-режим."""
+        # Проверяем наличие модели только один раз
+        if self._load_attempted:
+            return
+
+        self._load_attempted = True
+
         if not self.model_path.exists():
             logger.warning(f"FastText модель не найдена: {self.model_path}")
             self._try_fallback()
@@ -59,7 +66,7 @@ class FastTextWrapper:
             logger.info(f"FastText модель загружена, размерность {self._dim}")
             self._loaded = True
         except Exception as e:
-            logger.error(f"Ошибка загрузки fastText: {e}")
+            logger.warning(f"Ошибка загрузки fastText: {e}")
             self._try_fallback()
 
     def _try_fallback(self) -> None:
@@ -80,7 +87,8 @@ class FastTextWrapper:
                 logger.error(f"Ошибка загрузки fallback-словаря: {e}")
                 self._fallback_vectors = None
         else:
-            logger.error("Резервный словарь отсутствует, векторы будут случайными")
+            # Это не ошибка, а штатная ситуация при отсутствии модели
+            logger.info("Резервный словарь отсутствует, будут использованы случайные векторы")
             self._fallback_vectors = None
 
     def get_word_vector(self, word: str) -> np.ndarray:

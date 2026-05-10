@@ -1,0 +1,13 @@
+{
+    "db_path": "data/knowledge_base.db",
+    "fasttext_model_path": "models/cc.ru.300.bin",
+    "synonyms_path": "data/synonyms.json",
+    "min_confidence": 0.3,
+    "max_candidates": 20,
+    "max_parameters": 15,
+    "use_generative": false,
+    "generative_model": "rugpt3small_based_on_gpt2",
+    "timeout_seconds": 2.0,
+    "cache_embeddings": true,
+    "log_level": "INFO"
+}

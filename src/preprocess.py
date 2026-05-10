@@ -9,6 +9,7 @@ from typing import Optional
 from pymorphy3 import MorphAnalyzer
 
 from src.lemmatizer import Lemmatizer
+from src.synonyms import SynonymDict
 from src.text_cleaner import clean_text
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,9 @@ def load_synonyms(synonyms_path: str) -> dict[str, list[dict[str, float | str]]]
     return SYNONYMS
 
 
-def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
+def preprocess(
+    term: str, hints: Optional[list[str]] = None, synonym_dict: Optional[SynonymDict] = None
+) -> dict:
     """Предобработать входные данные.
 
     Выполняет:
@@ -53,10 +56,12 @@ def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
     2. Очистку текста (с проверкой длины)
     3. Лемматизацию через Lemmatizer
     4. Удаление дубликатов подсказок
+    5. Расширение синонимами с правильными весами
 
     Args:
         term: Анализируемый термин.
         hints: Список уточняющих слов (0-3 слова).
+        synonym_dict: Экземпляр SynonymDict для получения синонимов (опционально).
 
     Returns:
         dict: Словарь с подготовленными данными:
@@ -68,6 +73,7 @@ def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
             - term_lemmas: список лемм термина
             - hints_lemmas: список списков лемм для каждой подсказки
             - all_lemmas: список всех лемм
+            - tokens_with_weights: список кортежей (токен, вес) для векторизации
             - warnings: список предупреждений
 
     Note:
@@ -154,6 +160,11 @@ def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
     for hint_lemmas_list in hints_lemmas:
         all_lemmas.extend(hint_lemmas_list)
 
+    # 7. Расширение синонимами с весами
+    tokens_with_weights = _expand_with_synonyms(
+        term_lemmas, hints_lemmas, synonym_dict, lemmatizer
+    )
+
     logger.info(f"Предобработка завершена: term='{clean_term}', hints={clean_hints}")
 
     return {
@@ -165,5 +176,71 @@ def preprocess(term: str, hints: Optional[list[str]] = None) -> dict:
         "term_lemmas": term_lemmas,
         "hints_lemmas": hints_lemmas,
         "all_lemmas": all_lemmas,
+        "tokens_with_weights": tokens_with_weights,
         "warnings": warnings,
     }
+
+
+def _expand_with_synonyms(
+    term_lemmas: list[str],
+    hints_lemmas: list[list[str]],
+    synonym_dict: Optional[SynonymDict],
+    lemmatizer: Lemmatizer,
+) -> list[tuple[str, float]]:
+    """Расширить токены синонимами с правильными весами.
+
+    Формула весов (согласно ТЗ):
+    - Вес исходных токенов терма: 0.7 / len(term_lemmas)
+    - Вес исходных токенов подсказок: 0.3 / total_hint_words
+    - Суммарный вес всех синонимов: 0.1 (равномерно между всеми синонимами)
+
+    Args:
+        term_lemmas: Список лемм термина.
+        hints_lemmas: Список списков лемм для каждой подсказки.
+        synonym_dict: Экземпляр SynonymDict для получения синонимов.
+        lemmatizer: Экземпляр Lemmatizer для лемматизации синонимов.
+
+    Returns:
+        Список кортежей (токен, вес).
+    """
+    tokens_with_weights: list[tuple[str, float]] = []
+
+    # Вес для токенов термина
+    term_weight_per_word = 0.7 / len(term_lemmas)
+    for lemma in term_lemmas:
+        tokens_with_weights.append((lemma, term_weight_per_word))
+
+    # Сбор синонимов для термина
+    all_synonyms: set[str] = set()
+    for lemma in term_lemmas:
+        if synonym_dict:
+            for syn in synonym_dict.get_synonyms(lemma, max_synonyms=2):
+                # Лемматизируем синоним
+                syn_lemma = lemmatizer.lemmatize_word(syn)
+                if syn_lemma:
+                    all_synonyms.add(syn_lemma)
+
+    # Вес для токенов подсказок
+    total_hint_words = sum(len(lst) for lst in hints_lemmas)
+    if total_hint_words > 0:
+        hint_weight_per_word = 0.3 / total_hint_words
+        for hint_list in hints_lemmas:
+            for lemma in hint_list:
+                tokens_with_weights.append((lemma, hint_weight_per_word))
+                # Сбор синонимов для подсказок
+                if synonym_dict:
+                    for syn in synonym_dict.get_synonyms(lemma, max_synonyms=2):
+                        syn_lemma = lemmatizer.lemmatize_word(syn)
+                        if syn_lemma:
+                            all_synonyms.add(syn_lemma)
+    else:
+        # Если нет подсказок, собираем синонимы только с терма
+        pass
+
+    # Добавляем синонимы
+    if all_synonyms:
+        synonym_weight = 0.1 / len(all_synonyms)
+        for syn in all_synonyms:
+            tokens_with_weights.append((syn, synonym_weight))
+
+    return tokens_with_weights

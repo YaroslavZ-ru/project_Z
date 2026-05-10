@@ -3,6 +3,7 @@
 import unittest
 
 from src.preprocess import preprocess
+from src.synonyms import SynonymDict
 
 
 class TestPreprocess(unittest.TestCase):
@@ -121,6 +122,85 @@ class TestPreprocess(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["clean_term"], "ключ 123")
         self.assertEqual(result["clean_hints"], ["размер 10"])
+
+    def test_preprocess_with_synonyms(self):
+        """Предобработка с синонимами."""
+        # Создаем временный словарь синонимов
+        import tempfile
+        import os
+        import json
+
+        temp_dir = tempfile.mkdtemp()
+        temp_file = os.path.join(temp_dir, "synonyms.json")
+        test_data = {
+            "ключ": ["инструмент", "отмычка"],
+            "техника": ["механизм"],
+        }
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(test_data, f, ensure_ascii=False, indent=2)
+
+        synonym_dict = SynonymDict(temp_file)
+
+        result = preprocess("ключ", ["техника"], synonym_dict=synonym_dict)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("tokens_with_weights", result)
+
+        # Проверяем веса
+        tokens_weights = result["tokens_with_weights"]
+        token_dict = dict(tokens_weights)
+
+        # Термин "ключ" должен иметь вес 0.7
+        self.assertAlmostEqual(token_dict.get("ключ", 0), 0.7, places=5)
+
+        # Подсказка "техника" должна иметь вес 0.3
+        self.assertAlmostEqual(token_dict.get("техника", 0), 0.3, places=5)
+
+        # Синонимы должны иметь суммарный вес 0.1
+        # "инструмент", "отмычка", "механизм" = 3 синонима, каждый 0.1/3
+        self.assertAlmostEqual(token_dict.get("инструмент", 0), 0.1 / 3, places=5)
+        self.assertAlmostEqual(token_dict.get("отмычка", 0), 0.1 / 3, places=5)
+        self.assertAlmostEqual(token_dict.get("механизм", 0), 0.1 / 3, places=5)
+
+        # Очистка
+        os.remove(temp_file)
+        os.rmdir(temp_dir)
+
+    def test_preprocess_without_synonyms(self):
+        """Предобработка без синонимов."""
+        result = preprocess("ключ", ["техника"])
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("tokens_with_weights", result)
+
+        tokens_weights = result["tokens_with_weights"]
+        token_dict = dict(tokens_weights)
+
+        # Термин "ключ" должен иметь вес 0.7
+        self.assertAlmostEqual(token_dict.get("ключ", 0), 0.7, places=5)
+
+        # Подсказка "техника" должна иметь вес 0.3
+        self.assertAlmostEqual(token_dict.get("техника", 0), 0.3, places=5)
+
+        # Синонимов нет, суммарный вес синонимов = 0
+        self.assertEqual(len([t for t in tokens_weights if t[0] not in ["ключ", "техника"]]), 0)
+
+    def test_preprocess_multiple_term_words(self):
+        """Термин с несколькими словами."""
+        result = preprocess("ключ гаечный", ["техника"], synonym_dict=None)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["term_lemmas"], ["ключ", "гаечный"])
+
+        tokens_weights = result["tokens_with_weights"]
+        token_dict = dict(tokens_weights)
+
+        # Каждое слово термина должно иметь вес 0.7 / 2 = 0.35
+        self.assertAlmostEqual(token_dict.get("ключ", 0), 0.35, places=5)
+        self.assertAlmostEqual(token_dict.get("гаечный", 0), 0.35, places=5)
+
+        # Подсказка должна иметь вес 0.3
+        self.assertAlmostEqual(token_dict.get("техника", 0), 0.3, places=5)
 
 
 if __name__ == "__main__":

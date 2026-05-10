@@ -18,6 +18,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
 # Добавляем корень проекта в path для импортов
 PROJECT_ROOT = Path(__file__).parent
@@ -27,6 +28,10 @@ from src.config import Config
 from src.preprocess import preprocess
 from src.embeddings import FastTextWrapper
 from src.vectorize import vectorize
+from src.knowledge_base import KnowledgeBase
+from src.search import search_similar_concepts
+from src.fallback import generate_template_response, load_templates
+from src.synonyms import SynonymDict
 
 
 def _compute_query_vector(term: str, hints_tuple: tuple, config: Config) -> np.ndarray:
@@ -101,42 +106,72 @@ def run_pipeline(term: str, hints: list[str], config: Config, debug: bool = Fals
     Returns:
         dict: Структурированный ответ.
     """
-    # Проверка кэша
-    hints_tuple = tuple(hints)
-    try:
-        cached_vec = _cached_vector(term, hints_tuple, hash(str(config.to_dict())))
-        query_vector = np.array(cached_vec, dtype=np.float32)
-        logger.info("Вектор запроса получен из кэша")
-    except (ValueError, FileNotFoundError) as e:
-        # Кэш не сработал или ошибка - вычисляем заново
-        try:
-            query_vector = _compute_query_vector(term, hints_tuple, config)
-        except ValueError as e:
-            return {
-                "status": "error",
-                "message": str(e),
-                "term": term,
-                "selected_context": {"domain": "не определено", "confidence": 0.0},
-                "parameters": [],
-                "suggested_refinements": [],
-                "warnings": [str(e)],
-            }
+    # Инициализация компонентов
+    synonym_dict = SynonymDict(config.synonyms_path)
+    emb_model = FastTextWrapper(
+        str(config.fasttext_model_path),
+        str(config.db_path.parent / "models" / "static_embeddings.npy")
+    )
+    
+    # Предобработка
+    processed = preprocess(term, hints, synonym_dict)
 
-    # Фиктивный ответ в соответствии со спецификацией
-    response = {
-        "status": "ok",
-        "term": term,
-        "selected_context": {"domain": "не определено", "confidence": 0.0},
-        "parameters": [],
-        "suggested_refinements": [],
-        "warnings": [],
-    }
+    if processed.get("status") == "error":
+        return {
+            "status": "error",
+            "message": processed.get("message", "Ошибка предобработки"),
+            "term": term,
+            "selected_context": {"domain": "не определено", "confidence": 0.0},
+            "parameters": [],
+            "suggested_refinements": [],
+            "warnings": [processed.get("message", "")],
+        }
+
+    # Векторизация
+    query_vector = vectorize(processed, emb_model, normalize=True)
+
+    # Инициализация базы знаний
+    kb = KnowledgeBase(config.db_path, emb_model, synonym_dict)
+    
+    # Пересчёт эмбеддингов при первом запуске (если они случайные)
+    # Проверяем, нулевые ли эмбеддинги
+    concepts = kb.get_all_concepts(use_cache=False)
+    if concepts and np.linalg.norm(concepts[0]['embedding']) < 0.1:
+        logger.info("Эмбеддинги случайные, пересчитываем...")
+        kb.update_all_embeddings()
+
+    # Поиск похожих понятий
+    candidates = search_similar_concepts(
+        query_vector, kb, config.min_confidence, config.max_candidates
+    )
+
+    # Формирование ответа
+    if candidates:
+        # Берём первого кандидата (пока без агрегации параметров)
+        best = candidates[0]
+        response = {
+            "status": "ok",
+            "term": term,
+            "selected_context": {
+                "domain": best["domain"],
+                "confidence": best["similarity"],
+            },
+            "parameters": best["parameters"],
+            "suggested_refinements": [],
+            "warnings": [],
+        }
+    else:
+        # Fallback-режим
+        templates = load_templates(config.domain_templates_path)
+        response = generate_template_response(
+            term, hints, processed, templates
+        )
 
     if debug:
         response["debug_info"] = {
-            "query_vector": query_vector[:10].tolist(),  # Первые 10 значений
-            "candidates_raw": [],
-            "scores_distribution": [],
+            "query_vector": query_vector[:10].tolist(),
+            "candidates_raw": candidates[:5],
+            "scores_distribution": [c["similarity"] for c in candidates[:10]],
         }
 
     return response

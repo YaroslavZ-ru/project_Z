@@ -13,6 +13,7 @@ class Config:
     db_path: Path
     fasttext_model_path: Path
     synonyms_path: Path
+    domain_templates_path: Path
     min_confidence: float
     max_candidates: int
     max_parameters: int
@@ -117,6 +118,7 @@ class Config:
             db_path=make_absolute(data["db_path"]),
             fasttext_model_path=make_absolute(data["fasttext_model_path"]),
             synonyms_path=make_absolute(data["synonyms_path"]),
+            domain_templates_path=make_absolute(data["domain_templates_path"]),
             min_confidence=float(data["min_confidence"]),
             max_candidates=int(data["max_candidates"]),
             max_parameters=int(data["max_parameters"]),
@@ -133,6 +135,7 @@ class Config:
             "db_path": str(self.db_path),
             "fasttext_model_path": str(self.fasttext_model_path),
             "synonyms_path": str(self.synonyms_path),
+            "domain_templates_path": str(self.domain_templates_path),
             "min_confidence": self.min_confidence,
             "max_candidates": self.max_candidates,
             "max_parameters": self.max_parameters,

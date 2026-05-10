@@ -1,0 +1,53 @@
+{
+    "музыка": {
+        "domain": "музыка",
+        "parameters": [
+            {
+                "name": "genre",
+                "label_ru": "Жанр",
+                "type": "string",
+                "description": "Музыкальное направление"
+            },
+            {
+                "name": "composer",
+                "label_ru": "Композитор",
+                "type": "string",
+                "description": "Автор произведения"
+            }
+        ]
+    },
+    "техника": {
+        "domain": "техника",
+        "parameters": [
+            {
+                "name": "power_source",
+                "label_ru": "Источник энергии",
+                "type": "string",
+                "description": "Ручной, электрический, пневматический"
+            },
+            {
+                "name": "material",
+                "label_ru": "Материал",
+                "type": "string",
+                "description": "Материал изготовления"
+            }
+        ]
+    },
+    "общее": {
+        "domain": "общее",
+        "parameters": [
+            {
+                "name": "name",
+                "label_ru": "Название",
+                "type": "string",
+                "description": "Имя объекта"
+            },
+            {
+                "name": "description",
+                "label_ru": "Описание",
+                "type": "string",
+                "description": "Описание объекта"
+            }
+        ]
+    }
+}

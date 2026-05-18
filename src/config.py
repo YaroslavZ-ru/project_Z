@@ -27,6 +27,8 @@ class Config:
     use_synonyms: bool
     max_term_length: int
     max_hint_length: int
+    word_vector_cache_size: int
+    query_cache_size: int
 
     # Допустимые уровни логирования
     VALID_LOG_LEVELS: Set[str] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
@@ -161,6 +163,8 @@ class Config:
             use_synonyms=bool(data.get("use_synonyms", True)),
             max_term_length=int(data.get("max_term_length", 100)),
             max_hint_length=int(data.get("max_hint_length", 50)),
+            word_vector_cache_size=int(data.get("word_vector_cache_size", 20000)),
+            query_cache_size=int(data.get("query_cache_size", 100)),
         )
 
     def to_dict(self) -> dict:
@@ -183,4 +187,6 @@ class Config:
             "use_synonyms": self.use_synonyms,
             "max_term_length": self.max_term_length,
             "max_hint_length": self.max_hint_length,
+            "word_vector_cache_size": self.word_vector_cache_size,
+            "query_cache_size": self.query_cache_size,
         }

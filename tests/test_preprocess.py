@@ -328,6 +328,8 @@ class TestPreprocess(unittest.TestCase):
             use_synonyms=False,  # Отключаем синонимы
             max_term_length=100,
             max_hint_length=50,
+            word_vector_cache_size=20000,
+            query_cache_size=100,
         )
 
         result = preprocess("ключ", [], synonym_dict=synonym_dict, config=config)

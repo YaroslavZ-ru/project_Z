@@ -8,6 +8,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from typing import Optional
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +27,24 @@ class FastTextWrapper:
     - Fallback-режим при отсутствии fastText (загрузка из .npy файла)
     """
 
-    def __init__(self, model_path: str, fallback_npy_path: Optional[str] = None):
+    def __init__(self, model_path: str, fallback_npy_path: Optional[str] = None, cache_size: int = 20000):
         """Инициализация обертки fastText.
 
         Args:
             model_path: Путь к fastText модели (.bin файл).
             fallback_npy_path: Путь к резервному словарю {word: vector} в .npy формате.
+            cache_size: Максимальный размер кэша векторов слов (LRU, по умолчанию 20000).
         """
         self.model_path = Path(model_path)
         self.fallback_path = Path(fallback_npy_path) if fallback_npy_path else None
         self._model: Optional[object] = None
         self._fallback_vectors: Optional[dict[str, np.ndarray]] = None
         self._dim: int = 300
-        self._word_cache: dict[str, np.ndarray] = {}
+        self._word_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._cache_maxsize = cache_size
         self._loaded = False
         self._load_attempted = False  # Флаг, что проверка уже была выполнена
+        self._logged_oov: set[str] = set()  # Для логирования OOV один раз на слово
 
     def _load_model(self) -> None:
         """Загрузить fastText модель или переключиться на fallback-режим."""
@@ -59,11 +63,12 @@ class FastTextWrapper:
         try:
             import fasttext
 
-            self._model = fasttext.load_model(str(self.model_path))
+            # Используем memory-mapping для экономии оперативной памяти
+            self._model = fasttext.load_model(str(self.model_path), mmap='r')
             # Получаем размерность через тестовое слово
             test_vec = self._model.get_word_vector("a")
             self._dim = len(test_vec)
-            logger.info(f"FastText модель загружена, размерность {self._dim}")
+            logger.info(f"FastText модель загружена (mmap='r'), размерность {self._dim}")
             self._loaded = True
         except Exception as e:
             logger.warning(f"Ошибка загрузки fastText: {e}")
@@ -104,9 +109,13 @@ class FastTextWrapper:
         if not word:
             return np.zeros(self._dim, dtype=np.float32)
 
-        # Проверка кэша
+        # Проверка кэша (LRU)
         if word in self._word_cache:
+            self._word_cache.move_to_end(word)
+            logger.debug(f"Кэш попадание (word): '{word}'")
             return self._word_cache[word]
+
+        logger.debug(f"Кэш промах (word): '{word}'")
 
         # Если модель не загружена и нет fallback - загружаем
         if not self._loaded and self._fallback_vectors is None:
@@ -125,16 +134,26 @@ class FastTextWrapper:
         if vec is None and self._fallback_vectors is not None:
             vec = self._fallback_vectors.get(word)
 
-        # Last resort: случайный нормализованный вектор
+        # Last resort: нулевой вектор (если нет модели и fallback)
         if vec is None:
-            logger.warning(f"Вектор для '{word}' не найден, генерируем случайный")
-            vec = np.random.randn(self._dim).astype(np.float32)
-            norm = np.linalg.norm(vec)
-            if norm > 0:
-                vec = vec / norm
+            # Логируем OOV только один раз на слово
+            if word not in self._logged_oov:
+                logger.warning(f"Вектор для '{word}' не найден, возвращаем нулевой вектор")
+                self._logged_oov.add(word)
+            vec = np.zeros(self._dim, dtype=np.float32)
 
         vec = np.array(vec, dtype=np.float32)
-        self._word_cache[word] = vec
+        
+        # Добавляем в кэш (LRU)
+        if word in self._word_cache:
+            self._word_cache.move_to_end(word)
+        else:
+            self._word_cache[word] = vec
+            # Если кэш полон, удаляем самый старый
+            if len(self._word_cache) > self._cache_maxsize:
+                oldest_key = next(iter(self._word_cache))
+                del self._word_cache[oldest_key]
+
         return vec
 
     def get_phrase_vector(self, phrase: str) -> np.ndarray:

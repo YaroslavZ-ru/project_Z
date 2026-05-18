@@ -9,7 +9,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from functools import lru_cache
+from typing import Optional
 
 import numpy as np
 
@@ -33,69 +33,16 @@ from src.search import search_similar_concepts
 from src.fallback import generate_template_response, load_templates
 from src.synonyms import SynonymDict
 from src.aggregation import aggregate_parameters, determine_context
+from src.cache import QueryVectorCache
 
 
-def _compute_query_vector(term: str, hints_tuple: tuple, config: Config) -> np.ndarray:
-    """Вычислить вектор запроса (внутренняя функция для кэширования).
-
-    Args:
-        term: Анализируемый термин.
-        hints_tuple: Кортеж уточняющих слов (для хешируемости в lru_cache).
-        config: Экземпляр конфигурации.
-
-    Returns:
-        Нормализованный вектор запроса.
-    """
-    # Предобработка
-    processed = preprocess(term, list(hints_tuple))
-
-    if processed.get("status") == "error":
-        raise ValueError(processed.get("message", "Ошибка предобработки"))
-
-    # Векторизация
-    emb_model = FastTextWrapper(
-        str(config.fasttext_model_path),
-        str(config.db_path.parent / "models" / "static_embeddings.npy")
-    )
-    query_vector = vectorize(processed, emb_model, normalize=True)
-
-    return query_vector
-
-
-@lru_cache(maxsize=100)
-def _cached_vector(term: str, hints_tuple: tuple, config_hash: int) -> tuple:
-    """Кэшированная функция для получения вектора запроса.
-
-    Возвращает кортеж чисел вместо ndarray для возможности кэширования.
-
-    Args:
-        term: Анализируемый термин.
-        hints_tuple: Кортеж уточняющих слов.
-        config_hash: Хеш конфигурации (для инвалидации кэша при изменении).
-
-    Returns:
-        Кортеж чисел (вектор).
-    """
-    # Создаем фиктивный config для получения хеша
-    # В реальном проекте можно использовать версию конфига
-    _ = config_hash
-
-    # Вычисляем вектор
-    processed = preprocess(term, list(hints_tuple))
-    if processed.get("status") == "error":
-        raise ValueError(processed.get("message", "Ошибка предобработки"))
-
-    emb_model = FastTextWrapper(
-        "models/cc.ru.300.bin",
-        "models/static_embeddings.npy"
-    )
-    query_vector = vectorize(processed, emb_model, normalize=True)
-
-    # Преобразуем в кортеж для кэширования
-    return tuple(query_vector.tolist())
-
-
-def run_pipeline(term: str, hints: list[str], config: Config, debug: bool = False) -> dict:
+def run_pipeline(
+    term: str,
+    hints: list[str],
+    config: Config,
+    debug: bool = False,
+    cache: Optional[QueryVectorCache] = None,
+) -> dict:
     """Запустить полный конвейер обработки термина.
 
     Args:
@@ -103,15 +50,19 @@ def run_pipeline(term: str, hints: list[str], config: Config, debug: bool = Fals
         hints: Список уточняющих слов (0-3 слова).
         config: Экземпляр конфигурации.
         debug: Режим отладки (добавить промежуточные данные в ответ).
+        cache: Экземпляр QueryVectorCache для кэширования (опционально).
 
     Returns:
         dict: Структурированный ответ.
     """
+    logger.info(f"Pipeline запущен: term='{term}', hints_count={len(hints)}")
+
     # Инициализация компонентов
     synonym_dict = SynonymDict(config.synonyms_path)
     emb_model = FastTextWrapper(
         str(config.fasttext_model_path),
-        str(config.db_path.parent / "models" / "static_embeddings.npy")
+        str(config.db_path.parent / "models" / "static_embeddings.npy"),
+        cache_size=config.word_vector_cache_size
     )
     
     # Предобработка
@@ -128,8 +79,20 @@ def run_pipeline(term: str, hints: list[str], config: Config, debug: bool = Fals
             "warnings": [processed.get("message", "")],
         }
 
-    # Векторизация
-    query_vector = vectorize(processed, emb_model, normalize=True)
+    # Проверка кэша
+    if cache is not None:
+        cached_result = cache.get(term, hints, config)
+        if cached_result is not None:
+            query_vector, _ = cached_result
+            logger.debug(f"Кэш использован для term='{term}'")
+        else:
+            # Векторизация
+            query_vector = vectorize(processed, emb_model, normalize=True)
+            # Сохраняем в кэш
+            cache.set(term, hints, config, query_vector, {"preprocessed": processed})
+    else:
+        # Векторизация без кэша
+        query_vector = vectorize(processed, emb_model, normalize=True)
 
     # Инициализация базы знаний
     kb = KnowledgeBase(config.db_path, emb_model, synonym_dict)
@@ -203,11 +166,14 @@ def main():
         return
 
     # Обработка входных данных
+    # Создаем кэш для векторов запросов
+    cache = QueryVectorCache(max_size=config.query_cache_size)
     result = run_pipeline(
         test_input["term"],
         test_input.get("hints", []),
         config,
-        debug=test_input.get("debug", False)
+        debug=test_input.get("debug", False),
+        cache=cache
     )
 
     # Вывод результата

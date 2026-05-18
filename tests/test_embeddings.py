@@ -1,5 +1,6 @@
 """Тесты модуля эмбеддингов (FastTextWrapper)."""
 
+import logging
 import numpy as np
 import pytest
 from pathlib import Path
@@ -15,6 +16,22 @@ class TestFastTextWrapper:
         # Создаем с фиктивным путем (не будет загружена)
         emb = FastTextWrapper("models/nonexistent.bin")
         assert emb.get_dimension() == 300
+
+    def test_get_word_vector_caching_logs(self, caplog):
+        """Проверка логов кэширования (DEBUG)."""
+        emb = FastTextWrapper("models/nonexistent.bin")
+        
+        with caplog.at_level(logging.DEBUG):
+            # Первый вызов - промах
+            emb.get_word_vector("тест1")
+            assert any("Кэш промах" in record.message for record in caplog.records)
+            
+            # Очистка логов
+            caplog.clear()
+            
+            # Второй вызов - попадание
+            emb.get_word_vector("тест1")
+            assert any("Кэш попадание" in record.message for record in caplog.records)
 
     def test_get_word_vector_returns_array(self):
         """get_word_vector возвращает numpy array."""
@@ -49,15 +66,13 @@ class TestFastTextWrapper:
         assert np.allclose(v1, v2)
 
     def test_get_word_vector_different_words(self):
-        """Разные слова дают разные векторы (в fallback-режиме)."""
+        """Разные слова дают нулевые векторы (в режиме без модели и fallback)."""
         emb = FastTextWrapper("models/nonexistent.bin")
         v1 = emb.get_word_vector("тест1")
         v2 = emb.get_word_vector("тест2")
-        # В fallback-режиме векторы случайные, скорее всего разные
-        # (но это не гарантируется, так как это случайность)
-        # Проверяем только что векторы не нулевые
-        assert not np.allclose(v1, 0.0)
-        assert not np.allclose(v2, 0.0)
+        # В режиме без модели и fallback возвращаются нулевые векторы
+        assert np.allclose(v1, 0.0)
+        assert np.allclose(v2, 0.0)
 
     def test_get_phrase_vector(self):
         """get_phrase_vector возвращает усредненный вектор."""
@@ -120,7 +135,7 @@ class TestFastTextWrapper:
             assert np.allclose(vec[1:], 0.0)
 
     def test_get_word_vector_fallback_not_found(self):
-        """Если слово не найдено в fallback, возвращается случайный вектор."""
+        """Если слово не найдено в fallback, возвращается нулевой вектор."""
         import tempfile
         from pathlib import Path
 
@@ -131,12 +146,12 @@ class TestFastTextWrapper:
 
             emb = FastTextWrapper("models/nonexistent.bin", str(fallback_path))
             vec = emb.get_word_vector("не_в_словаре")
-            # Должен вернуть случайный нормализованный вектор
-            assert np.isclose(np.linalg.norm(vec), 1.0)
+            # Должен вернуть нулевой вектор
+            assert np.allclose(vec, 0.0)
 
     def test_get_word_vector_no_fallback(self):
-        """Если fallback не указан, возвращаются случайные векторы."""
+        """Если fallback не указан, возвращаются нулевые векторы."""
         emb = FastTextWrapper("models/nonexistent.bin")
         vec = emb.get_word_vector("тест")
-        # Должен вернуть случайный нормализованный вектор
-        assert np.isclose(np.linalg.norm(vec), 1.0)
+        # Должен вернуть нулевой вектор
+        assert np.allclose(vec, 0.0)

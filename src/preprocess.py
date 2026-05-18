@@ -206,8 +206,8 @@ def _expand_with_synonyms(
     """Расширить токены синонимами с правильными весами.
 
     Формула весов (согласно ТЗ):
-    - Вес исходных токенов терма: 0.7 / len(term_lemmas)
-    - Вес исходных токенов подсказок: 0.3 / total_hint_words
+    - Вес исходных токенов терма: 0.7 / len(term_lemmas) (распределяется равномерно)
+    - Вес исходных токенов подсказок: 0.3 / len(hints) / words_in_hint (каждая подсказка 0.3, распределяется между словами)
     - Суммарный вес всех синонимов: 0.1 (равномерно между всеми синонимами)
 
     Args:
@@ -240,19 +240,26 @@ def _expand_with_synonyms(
                     all_synonyms.add(syn_lemma)
 
     # Вес для токенов подсказок
-    total_hint_words = sum(len(lst) for lst in hints_lemmas)
-    if total_hint_words > 0:
-        hint_weight_per_word = 0.3 / total_hint_words
+    # Каждая подсказка (оригинальные слова, не синонимы): вес 0.3 / len(hints)
+    # Если подсказок нет, вес подсказок = 0
+    # Если одна подсказка, вес = 0.3
+    num_hints = len(hints_lemmas)
+    if num_hints > 0:
+        hint_weight_per_hint = 0.3 / num_hints
         for hint_list in hints_lemmas:
-            for lemma in hint_list:
-                tokens_with_weights.append((lemma, hint_weight_per_word))
-                # Сбор синонимов для подсказок
-                if use_synonyms and synonym_dict:
-                    for syn in synonym_dict.get_synonyms(lemma, max_synonyms=max_synonyms):
-                        syn_word = syn[0] if isinstance(syn, tuple) else syn
-                        syn_lemma = lemmatizer.lemmatize_word(syn_word)
-                        if syn_lemma:
-                            all_synonyms.add(syn_lemma)
+            # Каждое слово в подсказке получает равную долю веса подсказки
+            words_in_hint = len(hint_list)
+            if words_in_hint > 0:
+                hint_weight_per_word = hint_weight_per_hint / words_in_hint
+                for lemma in hint_list:
+                    tokens_with_weights.append((lemma, hint_weight_per_word))
+                    # Сбор синонимов для подсказок
+                    if use_synonyms and synonym_dict:
+                        for syn in synonym_dict.get_synonyms(lemma, max_synonyms=max_synonyms):
+                            syn_word = syn[0] if isinstance(syn, tuple) else syn
+                            syn_lemma = lemmatizer.lemmatize_word(syn_word)
+                            if syn_lemma:
+                                all_synonyms.add(syn_lemma)
     else:
         # Если нет подсказок, собираем синонимы только с терма
         pass

@@ -15,5 +15,7 @@
     "max_synonyms_per_token": 2,
     "use_synonyms": true,
     "max_term_length": 100,
-    "max_hint_length": 50
+    "max_hint_length": 50,
+    "word_vector_cache_size": 20000,
+    "query_cache_size": 100
 }

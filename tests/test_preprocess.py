@@ -1,6 +1,7 @@
 """Тесты модуля предобработки текста для AI-Terminator."""
 
 import unittest
+from pathlib import Path
 
 from src.preprocess import preprocess
 from src.synonyms import SynonymDict
@@ -77,7 +78,8 @@ class TestPreprocess(unittest.TestCase):
         """Очистка специальных символов."""
         result = preprocess("ключ-гаечный!", ["техника", "вращение"])
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["clean_term"], "ключ-гаечный")
+        # Дефисы заменяются на пробелы для составных слов
+        self.assertEqual(result["clean_term"], "ключ гаечный")
 
     def test_preprocess_case_insensitive(self):
         """Регистронезависимость."""
@@ -113,8 +115,9 @@ class TestPreprocess(unittest.TestCase):
         """Обработка дефисов."""
         result = preprocess("ключ-гаечный", ["разводной-инструмент"])
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["clean_term"], "ключ-гаечный")
-        self.assertEqual(result["clean_hints"], ["разводной-инструмент"])
+        # Дефисы заменяются на пробелы для составных слов
+        self.assertEqual(result["clean_term"], "ключ гаечный")
+        self.assertEqual(result["clean_hints"], ["разводной инструмент"])
 
     def test_preprocess_numbers(self):
         """Числа в термине."""
@@ -243,6 +246,99 @@ class TestPreprocess(unittest.TestCase):
         self.assertAlmostEqual(token_dict.get("отмычка", 0), 0.025, places=5)
         self.assertAlmostEqual(token_dict.get("механизм", 0), 0.025, places=5)
         self.assertAlmostEqual(token_dict.get("поворот", 0), 0.025, places=5)
+
+        # Очистка
+        os.remove(temp_file)
+        os.rmdir(temp_dir)
+
+    def test_max_synonyms_per_token(self):
+        """Тест ограничения max_synonyms_per_token."""
+        import tempfile
+        import os
+        import json
+
+        temp_dir = tempfile.mkdtemp()
+        temp_file = os.path.join(temp_dir, "synonyms.json")
+        # Создаем словарь с 5 синонимами для одного слова
+        test_data = {
+            "ключ": [
+                {"word": "инструмент1", "weight": 0.9},
+                {"word": "инструмент2", "weight": 0.8},
+                {"word": "инструмент3", "weight": 0.7},
+                {"word": "инструмент4", "weight": 0.6},
+                {"word": "инструмент5", "weight": 0.5},
+            ],
+        }
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(test_data, f, ensure_ascii=False, indent=2)
+
+        synonym_dict = SynonymDict(temp_file)
+
+        # Тестируем с max_synonyms=2
+        result = preprocess("ключ", [], synonym_dict=synonym_dict)
+
+        self.assertEqual(result["status"], "ok")
+        tokens_weights = result["tokens_with_weights"]
+        token_dict = dict(tokens_weights)
+
+        # Должны быть только 2 синонима (самых весомых)
+        self.assertIn("инструмент1", token_dict)
+        self.assertIn("инструмент2", token_dict)
+        self.assertNotIn("инструмент3", token_dict)
+        self.assertNotIn("инструмент4", token_dict)
+        self.assertNotIn("инструмент5", token_dict)
+
+        # Очистка
+        os.remove(temp_file)
+        os.rmdir(temp_dir)
+
+    def test_use_synonyms_false(self):
+        """Тест отключения использования синонимов."""
+        import tempfile
+        import os
+        import json
+
+        temp_dir = tempfile.mkdtemp()
+        temp_file = os.path.join(temp_dir, "synonyms.json")
+        test_data = {
+            "ключ": ["инструмент"],
+        }
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(test_data, f, ensure_ascii=False, indent=2)
+
+        synonym_dict = SynonymDict(temp_file)
+
+        # Тестируем с use_synonyms=False через config
+        from src.config import Config
+        config = Config(
+            db_path=Path("data/knowledge_base.db"),
+            fasttext_model_path=Path("models/cc.ru.300.bin"),
+            synonyms_path=Path(temp_file),
+            domain_templates_path=Path("configs/domain_templates.json"),
+            min_confidence=0.3,
+            max_candidates=20,
+            max_parameters=15,
+            use_generative=False,
+            generative_model="rugpt3small_based_on_gpt2",
+            timeout_seconds=2.0,
+            cache_embeddings=True,
+            log_level="INFO",
+            cache_lemma_size=1000,
+            max_synonyms_per_token=2,
+            use_synonyms=False,  # Отключаем синонимы
+            max_term_length=100,
+            max_hint_length=50,
+        )
+
+        result = preprocess("ключ", [], synonym_dict=synonym_dict, config=config)
+
+        self.assertEqual(result["status"], "ok")
+        tokens_weights = result["tokens_with_weights"]
+        token_dict = dict(tokens_weights)
+
+        # Должен быть только термин без синонимов
+        self.assertAlmostEqual(token_dict.get("ключ", 0), 0.7, places=5)
+        self.assertNotIn("инструмент", token_dict)
 
         # Очистка
         os.remove(temp_file)

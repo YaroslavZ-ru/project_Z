@@ -34,4 +34,10 @@ def clean_text(text: str) -> str:
     # Удаляем дефисы по краям
     cleaned = cleaned.strip("-")
 
+    # Заменяем все оставшиеся дефисы на пробелы (для составных слов)
+    cleaned = cleaned.replace("-", " ")
+
+    # Схлопываем пробелы и обрезаем края
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
     return cleaned

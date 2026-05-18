@@ -115,7 +115,7 @@ def run_pipeline(term: str, hints: list[str], config: Config, debug: bool = Fals
     )
     
     # Предобработка
-    processed = preprocess(term, hints, synonym_dict)
+    processed = preprocess(term, hints, synonym_dict, config)
 
     if processed.get("status") == "error":
         return {

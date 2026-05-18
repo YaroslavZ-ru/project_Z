@@ -42,7 +42,10 @@ class TestSynonymDict(unittest.TestCase):
         """Тест получения синонимов для леммы."""
         synonym_dict = SynonymDict(self.temp_file)
         synonyms = synonym_dict.get_synonyms("ключ")
-        self.assertEqual(synonyms, ["инструмент", "отмычка"])
+        # Возвращаются кортежи (word, weight)
+        self.assertEqual(len(synonyms), 2)
+        self.assertEqual(synonyms[0][0], "инструмент")
+        self.assertEqual(synonyms[1][0], "отмычка")
 
     def test_get_synonyms_max_limit(self):
         """Тест ограничения количества синонимов."""
@@ -50,7 +53,8 @@ class TestSynonymDict(unittest.TestCase):
         # Для "техника" в файле 3 синонима, но max_synonyms=2
         synonyms = synonym_dict.get_synonyms("техника", max_synonyms=2)
         self.assertEqual(len(synonyms), 2)
-        self.assertEqual(synonyms, ["механизм", "устройство"])
+        self.assertEqual(synonyms[0][0], "механизм")
+        self.assertEqual(synonyms[1][0], "устройство")
 
     def test_get_synonyms_not_found(self):
         """Тест для леммы без синонимов."""
@@ -73,7 +77,7 @@ class TestSynonymDict(unittest.TestCase):
         synonym_dict = SynonymDict(self.temp_file)
         lemmas = ["ключ", "гаечный"]
         all_synonyms = synonym_dict.get_all_synonyms(lemmas)
-        # "ключ" -> ["инструмент", "отмычка"], "гаечный" -> ["разводной"]
+        # Возвращаются слова (без весов)
         self.assertEqual(set(all_synonyms), {"инструмент", "отмычка", "разводной"})
 
     def test_get_all_synonyms_unique(self):
@@ -91,7 +95,8 @@ class TestSynonymDict(unittest.TestCase):
         lemmas = ["ключ", "инструмент"]
         all_synonyms = synonym_dict.get_all_synonyms(lemmas, max_synonyms=2)
         # Должно быть 3 уникальных синонима: "инструмент", "отмычка", "ключ"
-        self.assertEqual(len(all_synonyms), 3)
+        words = [s[0] for s in all_synonyms]
+        self.assertEqual(len(words), 3)
 
     def test_has_synonyms(self):
         """Тест проверки наличия синонимов."""

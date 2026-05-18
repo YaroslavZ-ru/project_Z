@@ -10,5 +10,10 @@
     "generative_model": "rugpt3small_based_on_gpt2",
     "timeout_seconds": 2.0,
     "cache_embeddings": true,
-    "log_level": "INFO"
+    "log_level": "INFO",
+    "cache_lemma_size": 1000,
+    "max_synonyms_per_token": 2,
+    "use_synonyms": true,
+    "max_term_length": 100,
+    "max_hint_length": 50
 }

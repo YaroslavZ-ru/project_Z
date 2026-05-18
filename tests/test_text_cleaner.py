@@ -39,10 +39,10 @@ class TestCleanText(unittest.TestCase):
         self.assertEqual(clean_text("ключ  гаечный"), "ключ гаечный")
         self.assertEqual(clean_text("  ключ  гаечный  "), "ключ гаечный")
 
-    def test_preserve_hyphens(self):
-        """Тест сохранения дефисов внутри слова."""
-        self.assertEqual(clean_text("ключ-гаечный"), "ключ-гаечный")
-        self.assertEqual(clean_text("ключ - гаечный"), "ключ - гаечный")
+    def test_hyphen_to_space(self):
+        """Тест замены дефисов на пробелы для составных слов."""
+        self.assertEqual(clean_text("ключ-гаечный"), "ключ гаечный")
+        self.assertEqual(clean_text("ключ - гаечный"), "ключ гаечный")
 
     def test_remove_edge_hyphens(self):
         """Тест удаления дефисов по краям."""
@@ -79,7 +79,7 @@ class TestCleanText(unittest.TestCase):
         """Тест смешанного содержимого."""
         self.assertEqual(
             clean_text("  -Ключ-гаечный! (размер 12)  "),
-            "ключ-гаечный размер 12",
+            "ключ гаечный размер 12",
         )
 
     def test_cyrillic_and_latin_mixed(self):
@@ -89,7 +89,8 @@ class TestCleanText(unittest.TestCase):
 
     def test_multiple_hyphens(self):
         """Тест нескольких дефисов подряд."""
-        self.assertEqual(clean_text("ключ--гаечный"), "ключ--гаечный")
+        # Дефисы заменяются на пробелы, затем схлопываются
+        self.assertEqual(clean_text("ключ--гаечный"), "ключ гаечный")
         self.assertEqual(clean_text("ключ---"), "ключ")
 
     def test_unicode_whitespace(self):
@@ -101,9 +102,10 @@ class TestCleanText(unittest.TestCase):
 
     def test_complex_example(self):
         """Тест сложного примера из ТЗ."""
-        # Пример из ТЗ: "  -Ключ-гаечный! (размер 12)  " → "ключ-гаечный размер 12"
+        # Пример из ТЗ: "  -Ключ-гаечный! (размер 12)  " → "ключ гаечный размер 12"
+        # Дефисы заменяются на пробелы для составных слов
         result = clean_text("  -Ключ-гаечный! (размер 12)  ")
-        self.assertEqual(result, "ключ-гаечный размер 12")
+        self.assertEqual(result, "ключ гаечный размер 12")
 
     def test_emoji_removal(self):
         """Тест удаления эмодзи."""

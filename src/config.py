@@ -22,6 +22,11 @@ class Config:
     timeout_seconds: float
     cache_embeddings: bool
     log_level: str
+    cache_lemma_size: int
+    max_synonyms_per_token: int
+    use_synonyms: bool
+    max_term_length: int
+    max_hint_length: int
 
     # Допустимые уровни логирования
     VALID_LOG_LEVELS: Set[str] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
@@ -60,6 +65,30 @@ class Config:
         if self.log_level not in self.VALID_LOG_LEVELS:
             raise ValueError(
                 f"log_level должен быть одним из {self.VALID_LOG_LEVELS}, получено: {self.log_level}"
+            )
+
+        # cache_lemma_size должен быть положительным
+        if self.cache_lemma_size <= 0:
+            raise ValueError(
+                f"cache_lemma_size должен быть положительным, получено: {self.cache_lemma_size}"
+            )
+
+        # max_synonyms_per_token должен быть >= 1
+        if self.max_synonyms_per_token < 1:
+            raise ValueError(
+                f"max_synonyms_per_token должен быть >= 1, получено: {self.max_synonyms_per_token}"
+            )
+
+        # max_term_length должен быть положительным
+        if self.max_term_length <= 0:
+            raise ValueError(
+                f"max_term_length должен быть положительным, получено: {self.max_term_length}"
+            )
+
+        # max_hint_length должен быть положительным
+        if self.max_hint_length <= 0:
+            raise ValueError(
+                f"max_hint_length должен быть положительным, получено: {self.max_hint_length}"
             )
 
     @classmethod
@@ -127,6 +156,11 @@ class Config:
             timeout_seconds=float(data["timeout_seconds"]),
             cache_embeddings=bool(data["cache_embeddings"]),
             log_level=str(data["log_level"]),
+            cache_lemma_size=int(data.get("cache_lemma_size", 1000)),
+            max_synonyms_per_token=int(data.get("max_synonyms_per_token", 2)),
+            use_synonyms=bool(data.get("use_synonyms", True)),
+            max_term_length=int(data.get("max_term_length", 100)),
+            max_hint_length=int(data.get("max_hint_length", 50)),
         )
 
     def to_dict(self) -> dict:
@@ -144,4 +178,9 @@ class Config:
             "timeout_seconds": self.timeout_seconds,
             "cache_embeddings": self.cache_embeddings,
             "log_level": self.log_level,
+            "cache_lemma_size": self.cache_lemma_size,
+            "max_synonyms_per_token": self.max_synonyms_per_token,
+            "use_synonyms": self.use_synonyms,
+            "max_term_length": self.max_term_length,
+            "max_hint_length": self.max_hint_length,
         }

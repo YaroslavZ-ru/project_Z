@@ -6,7 +6,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 class SynonymDict:
     """Словарь синонимов, загружаемый из JSON-файла.
 
-    Формат JSON: {"лемма": ["синоним1", "синоним2", ...]}
-    Вес каждого синонима вычисляется алгоритмически (см. ТЗ).
+    Формат JSON: {"лемма": [{"word": "синоним", "weight": 0.8}, ...]}
+    Веса используются для приоритизации синонимов при выборе.
     """
 
     def __init__(self, json_path: str):
@@ -24,7 +24,7 @@ class SynonymDict:
         Args:
             json_path: Путь к JSON-файлу со синонимами.
         """
-        self._data: dict[str, list[str]] = {}
+        self._data: dict[str, list[dict[str, str | float]]] = {}
         self._load(json_path)
 
     def _load(self, json_path: str) -> None:
@@ -48,19 +48,29 @@ class SynonymDict:
             logger.error(f"Ошибка парсинга JSON в {json_path}: {e}")
             self._data = {}
 
-    def get_synonyms(self, lemma: str, max_synonyms: int = 2) -> List[str]:
-        """Получить синонимы для леммы.
+    def get_synonyms(self, lemma: str, max_synonyms: int = 2) -> List[Tuple[str, float]]:
+        """Получить синонимы для леммы с весами.
 
         Args:
             lemma: Лемма (нормальная форма слова).
             max_synonyms: Максимальное количество синонимов (по умолчанию 2).
 
         Returns:
-            Список синонимов (лемм), не более max_synonyms.
+            Список кортежей (word, weight), не более max_synonyms.
+            Синонимы отсортированы по убыванию веса.
             Если лемма не найдена, возвращает пустой список.
         """
         synonyms = self._data.get(lemma, [])
-        return synonyms[:max_synonyms]
+        
+        # Если формат старый (список строк), преобразуем
+        if synonyms and isinstance(synonyms[0], str):
+            synonyms = [{"word": s, "weight": 0.5} for s in synonyms]
+        
+        # Сортируем по весу и берем топ max_synonyms
+        sorted_synonyms = sorted(synonyms, key=lambda x: x.get("weight", 0.5), reverse=True)
+        result = [(s["word"], s.get("weight", 0.5)) for s in sorted_synonyms[:max_synonyms]]
+        
+        return result
 
     def get_all_synonyms(self, lemmas: List[str], max_synonyms: int = 2) -> List[str]:
         """Получить все синонимы для списка лемм.
@@ -70,12 +80,16 @@ class SynonymDict:
             max_synonyms: Максимальное количество синонимов на лемму.
 
         Returns:
-            Список уникальных синонимов.
+            Список уникальных синонимов (только слова, без весов).
         """
         all_synonyms = set()
         for lemma in lemmas:
             for syn in self.get_synonyms(lemma, max_synonyms):
-                all_synonyms.add(syn)
+                # syn - это кортеж (word, weight), берем только слово
+                if isinstance(syn, tuple) and len(syn) >= 1:
+                    all_synonyms.add(syn[0])
+                elif isinstance(syn, str):
+                    all_synonyms.add(syn)
         return list(all_synonyms)
 
     def has_synonyms(self, lemma: str) -> bool:

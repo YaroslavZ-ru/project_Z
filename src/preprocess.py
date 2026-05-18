@@ -47,7 +47,10 @@ def load_synonyms(synonyms_path: str) -> dict[str, list[dict[str, float | str]]]
 
 
 def preprocess(
-    term: str, hints: Optional[list[str]] = None, synonym_dict: Optional[SynonymDict] = None
+    term: str,
+    hints: Optional[list[str]] = None,
+    synonym_dict: Optional[SynonymDict] = None,
+    config: Optional["Config"] = None,
 ) -> dict:
     """Предобработать входные данные.
 
@@ -62,6 +65,7 @@ def preprocess(
         term: Анализируемый термин.
         hints: Список уточняющих слов (0-3 слова).
         synonym_dict: Экземпляр SynonymDict для получения синонимов (опционально).
+        config: Экземпляр Config для получения параметров конфигурации (опционально).
 
     Returns:
         dict: Словарь с подготовленными данными:
@@ -83,6 +87,16 @@ def preprocess(
         hints = []
 
     warnings: list[str] = []
+
+    # Получаем параметры из конфига или используем значения по умолчанию
+    if config is not None:
+        max_term_length = config.max_term_length
+        max_hint_length = config.max_hint_length
+        use_synonyms = config.use_synonyms
+    else:
+        max_term_length = 100
+        max_hint_length = 50
+        use_synonyms = True
 
     # 1. Валидация термина
     if not term or not term.strip():
@@ -117,18 +131,18 @@ def preprocess(
         clean_hints = clean_hints[:3]
 
     # 3. Проверка максимальной длины
-    if len(clean_term) > 100:
+    if len(clean_term) > max_term_length:
         return {
             "status": "error",
-            "message": f"Термин слишком длинный (максимум 100 символов, получено {len(clean_term)})",
+            "message": f"Термин слишком длинный (максимум {max_term_length} символов, получено {len(clean_term)})",
             "original_term": term,
             "original_hints": hints,
         }
 
     for i, hint in enumerate(clean_hints):
-        if len(hint) > 50:
-            warnings.append(f"Подсказка #{i + 1} слишком длинная (максимум 50 символов), обрезана")
-            clean_hints[i] = hint[:50]
+        if len(hint) > max_hint_length:
+            warnings.append(f"Подсказка #{i + 1} слишком длинная (максимум {max_hint_length} символов), обрезана")
+            clean_hints[i] = hint[:max_hint_length]
 
     # 4. Удаление дубликатов подсказок (сохраняя порядок)
     original_hint_count = len(clean_hints)
@@ -162,7 +176,7 @@ def preprocess(
 
     # 7. Расширение синонимами с весами
     tokens_with_weights = _expand_with_synonyms(
-        term_lemmas, hints_lemmas, synonym_dict, lemmatizer
+        term_lemmas, hints_lemmas, synonym_dict, lemmatizer, use_synonyms
     )
 
     logger.info(f"Предобработка завершена: term='{clean_term}', hints={clean_hints}")
@@ -186,6 +200,8 @@ def _expand_with_synonyms(
     hints_lemmas: list[list[str]],
     synonym_dict: Optional[SynonymDict],
     lemmatizer: Lemmatizer,
+    use_synonyms: bool = True,
+    max_synonyms: int = 2,
 ) -> list[tuple[str, float]]:
     """Расширить токены синонимами с правильными весами.
 
@@ -199,6 +215,8 @@ def _expand_with_synonyms(
         hints_lemmas: Список списков лемм для каждой подсказки.
         synonym_dict: Экземпляр SynonymDict для получения синонимов.
         lemmatizer: Экземпляр Lemmatizer для лемматизации синонимов.
+        use_synonyms: Включить ли использование синонимов.
+        max_synonyms: Максимальное количество синонимов на лемму.
 
     Returns:
         Список кортежей (токен, вес).
@@ -212,11 +230,12 @@ def _expand_with_synonyms(
 
     # Сбор синонимов для термина
     all_synonyms: set[str] = set()
-    for lemma in term_lemmas:
-        if synonym_dict:
-            for syn in synonym_dict.get_synonyms(lemma, max_synonyms=2):
-                # Лемматизируем синоним
-                syn_lemma = lemmatizer.lemmatize_word(syn)
+    if use_synonyms and synonym_dict:
+        for lemma in term_lemmas:
+            for syn in synonym_dict.get_synonyms(lemma, max_synonyms=max_synonyms):
+                # Лемматизируем синоним (извлекаем только слово из кортежа)
+                syn_word = syn[0] if isinstance(syn, tuple) else syn
+                syn_lemma = lemmatizer.lemmatize_word(syn_word)
                 if syn_lemma:
                     all_synonyms.add(syn_lemma)
 
@@ -228,9 +247,10 @@ def _expand_with_synonyms(
             for lemma in hint_list:
                 tokens_with_weights.append((lemma, hint_weight_per_word))
                 # Сбор синонимов для подсказок
-                if synonym_dict:
-                    for syn in synonym_dict.get_synonyms(lemma, max_synonyms=2):
-                        syn_lemma = lemmatizer.lemmatize_word(syn)
+                if use_synonyms and synonym_dict:
+                    for syn in synonym_dict.get_synonyms(lemma, max_synonyms=max_synonyms):
+                        syn_word = syn[0] if isinstance(syn, tuple) else syn
+                        syn_lemma = lemmatizer.lemmatize_word(syn_word)
                         if syn_lemma:
                             all_synonyms.add(syn_lemma)
     else:
@@ -238,7 +258,7 @@ def _expand_with_synonyms(
         pass
 
     # Добавляем синонимы
-    if all_synonyms:
+    if all_synonyms and use_synonyms:
         synonym_weight = 0.1 / len(all_synonyms)
         for syn in all_synonyms:
             tokens_with_weights.append((syn, synonym_weight))

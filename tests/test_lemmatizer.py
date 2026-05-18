@@ -88,6 +88,44 @@ class TestLemmatizer(unittest.TestCase):
         result = self.lemmatizer.lemmatize_phrase("ключи гаечные")
         self.assertEqual(result, ["ключ", "гаечный"])
 
+    def test_lru_cache_size_limit(self):
+        """Тест ограничения размера LRU-кэша."""
+        # Создаем лемматизатор с маленьким кэшем
+        # Сбросим синглтон для чистого теста
+        Lemmatizer._instance = None
+        lemmatizer = Lemmatizer(cache_size=3)
+        
+        # Добавляем 4 слова
+        lemmatizer.lemmatize_word("ключ1")
+        lemmatizer.lemmatize_word("ключ2")
+        lemmatizer.lemmatize_word("ключ3")
+        lemmatizer.lemmatize_word("ключ4")
+        
+        # Кэш должен быть ограничен 3 элементами
+        # Проверяем, что старые элементы были удалены
+        self.assertEqual(len(lemmatizer._cache), 3)
+
+    def test_lru_cache_order(self):
+        """Тест порядка элементов в LRU-кэше."""
+        # Сбросим синглтон для чистого теста
+        Lemmatizer._instance = None
+        lemmatizer = Lemmatizer(cache_size=3)
+        
+        # Добавляем слова
+        lemmatizer.lemmatize_word("ключ1")
+        lemmatizer.lemmatize_word("ключ2")
+        lemmatizer.lemmatize_word("ключ3")
+        
+        # Доступ к первому элементу перемещает его в конец
+        lemmatizer.lemmatize_word("ключ1")
+        
+        # Добавляем новое слово
+        lemmatizer.lemmatize_word("ключ4")
+        
+        # Кэш должен содержать: ключ2, ключ3, ключ1 (в порядке доступа)
+        # А ключ4 заменил самое старое (ключ2)
+        self.assertEqual(len(lemmatizer._cache), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

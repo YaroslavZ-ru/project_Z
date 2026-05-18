@@ -32,6 +32,7 @@ from src.knowledge_base import KnowledgeBase
 from src.search import search_similar_concepts
 from src.fallback import generate_template_response, load_templates
 from src.synonyms import SynonymDict
+from src.aggregation import aggregate_parameters, determine_context
 
 
 def _compute_query_vector(term: str, hints_tuple: tuple, config: Config) -> np.ndarray:
@@ -147,16 +148,21 @@ def run_pipeline(term: str, hints: list[str], config: Config, debug: bool = Fals
 
     # Формирование ответа
     if candidates:
-        # Берём первого кандидата (пока без агрегации параметров)
-        best = candidates[0]
+        # Агрегация параметров
+        parameters = aggregate_parameters(
+            candidates,
+            processed.get("hints_lemmas", []),
+            config.max_parameters
+        )
+        
+        # Определение контекста
+        selected_context = determine_context(candidates)
+        
         response = {
             "status": "ok",
             "term": term,
-            "selected_context": {
-                "domain": best["domain"],
-                "confidence": best["similarity"],
-            },
-            "parameters": best["parameters"],
+            "selected_context": selected_context,
+            "parameters": parameters,
             "suggested_refinements": [],
             "warnings": [],
         }

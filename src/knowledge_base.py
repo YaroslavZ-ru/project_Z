@@ -325,6 +325,191 @@ class KnowledgeBase:
             })
         return constraints
 
+    def save_concept(
+        self,
+        term: str,
+        domain: str,
+        parameters: List[Dict[str, Any]],
+        concept_id: Optional[str] = None,
+        relations: Optional[List[tuple]] = None,
+    ) -> str:
+        """Сохранить новое понятие в базу знаний.
+
+        Args:
+            term: Термин понятия (обязательный, не пустой после очистки).
+            domain: Предметная область (обязательный).
+            parameters: Список параметров с полями name, label_ru, type, description.
+            concept_id: Идентификатор (если не передан, генерируется автоматически).
+            relations: Список связей (target_concept_id, relation_type, confidence).
+
+        Returns:
+            concept_id сохранённого понятия.
+
+        Raises:
+            ValueError: Если термин пуст или параметры некорректны.
+            RuntimeError: Если невозможно вычислить эмбеддинг.
+        """
+        # Валидация термина
+        term_clean = term.strip()
+        if not term_clean:
+            raise ValueError("Термин не может быть пустым")
+
+        # Валидация домена
+        if not domain or not domain.strip():
+            raise ValueError("Домен не может быть пустым")
+
+        # Валидация параметров
+        if not parameters:
+            self.logger.warning("Параметры пусты для понятия '%s'", term)
+
+        # Генерация concept_id
+        if not concept_id:
+            import hashlib
+            id_string = f"{term_clean.lower().strip()}:{domain.lower().strip()}"
+            hash_value = hashlib.md5(id_string.encode()).hexdigest()[:12]
+            concept_id = f"concept_{hash_value}"
+
+        # Вычисление эмбеддинга
+        if self.embedding_model is None or self.synonym_dict is None:
+            raise RuntimeError(
+                "embedding_model и synonym_dict должны быть инициализированы для сохранения понятия"
+            )
+
+        try:
+            embedding = self.compute_concept_embedding(term_clean)
+        except Exception as e:
+            self.logger.error(f"Ошибка вычисления эмбеддинга для '{term_clean}': {e}")
+            raise RuntimeError(f"Не удалось вычислить эмбеддинг для термина '{term_clean}'") from e
+
+        # Валидация параметров и подготовка к вставке
+        valid_parameters = []
+        for param in parameters:
+            # Проверка обязательных полей
+            if "name" not in param or "label_ru" not in param or "type" not in param:
+                raise ValueError(
+                    f"Параметр должен содержать поля name, label_ru, type: {param}"
+                )
+
+            # Установка значений по умолчанию
+            param_copy = param.copy()
+            if "description" not in param_copy or not param_copy["description"]:
+                param_copy["description"] = ""
+
+            # Валидация типа
+            valid_types = {"string", "integer", "float", "boolean", "enum"}
+            if param_copy["type"] not in valid_types:
+                self.logger.warning(
+                    f"Недопустимый тип параметра '{param_copy['type']}', заменён на 'string'"
+                )
+                param_copy["type"] = "string"
+
+            # Валидация enum_values
+            if param_copy["type"] == "enum":
+                if "enum_values" not in param_copy or not param_copy["enum_values"]:
+                    self.logger.warning(
+                        f"Параметр '{param_copy['name']}' имеет тип enum, но enum_values отсутствует"
+                    )
+                    param_copy["type"] = "string"
+                else:
+                    # Сохраняем enum_values как JSON-строку
+                    param_copy["enum_values"] = json.dumps(param_copy["enum_values"])
+
+            valid_parameters.append(param_copy)
+
+        # Валидация связей
+        valid_relations = []
+        if relations:
+            valid_relation_types = {"is_a", "part_of", "related_to", "synonym"}
+            for rel in relations:
+                if len(rel) != 3:
+                    self.logger.warning(f"Некорректная связь (ожидается 3 элемента): {rel}")
+                    continue
+
+                target_id, rel_type, confidence = rel
+                if rel_type not in valid_relation_types:
+                    self.logger.warning(f"Недопустимый тип связи '{rel_type}': {rel}")
+                    continue
+
+                if not (0.0 <= confidence <= 1.0):
+                    self.logger.warning(f"Недопустимая уверенность связи {confidence}: {rel}")
+                    continue
+
+                valid_relations.append((target_id, rel_type, confidence))
+
+        # Транзакционная запись
+        try:
+            cursor = self.conn.cursor()
+
+            # Начало транзакции
+            cursor.execute("BEGIN")
+
+            # Вставка/обновление понятия
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO concepts (id, term, domain, embedding)
+                VALUES (?, ?, ?, ?)
+                """,
+                (concept_id, term_clean, domain, embedding.tobytes())
+            )
+
+            # Удаление старых параметров
+            cursor.execute(
+                "DELETE FROM parameters WHERE concept_id = ?",
+                (concept_id,)
+            )
+
+            # Вставка новых параметров
+            for param in valid_parameters:
+                cursor.execute(
+                    """
+                    INSERT INTO parameters (concept_id, name, label_ru, type, description, unit, enum_values)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        concept_id,
+                        param["name"],
+                        param["label_ru"],
+                        param["type"],
+                        param["description"],
+                        param.get("unit"),
+                        param.get("enum_values"),
+                    )
+                )
+
+            # Удаление старых связей
+            cursor.execute(
+                "DELETE FROM relations WHERE source_concept_id = ?",
+                (concept_id,)
+            )
+
+            # Вставка новых связей
+            for target_id, rel_type, confidence in valid_relations:
+                cursor.execute(
+                    """
+                    INSERT INTO relations (source_concept_id, target_concept_id, relation_type, confidence)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (concept_id, target_id, rel_type, confidence)
+                )
+
+            # Фиксация транзакции
+            self.conn.commit()
+
+            self.logger.info(
+                f"Сохранено понятие {concept_id}: {term_clean} ({domain}) "
+                f"с {len(valid_parameters)} параметрами и {len(valid_relations)} связями"
+            )
+
+            # Сброс кэша
+            self._cache = None
+
+            return concept_id
+
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            self.logger.error(f"Ошибка транзакции при сохранении понятия: {e}")
+            raise RuntimeError(f"Ошибка сохранения понятия в базу данных: {e}") from e
+
     def close(self) -> None:
         """Закрыть соединение с базой данных."""
         if self.conn:

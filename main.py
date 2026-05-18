@@ -363,5 +363,51 @@ def main():
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def save_concept_to_kb(
+    term: str,
+    domain: str,
+    parameters: list[dict],
+    config: Config,
+    concept_id: Optional[str] = None,
+    relations: Optional[list] = None,
+) -> str:
+    """Сохранить понятие в базу знаний.
+
+    Args:
+        term: Термин понятия.
+        domain: Предметная область.
+        parameters: Список параметров.
+        config: Экземпляр конфигурации.
+        concept_id: Идентификатор (опционально).
+        relations: Список связей (опционально).
+
+    Returns:
+        concept_id сохранённого понятия.
+    """
+    # Инициализация компонентов
+    synonym_dict = SynonymDict(config.synonyms_path)
+    emb_model = FastTextWrapper(
+        str(config.fasttext_model_path),
+        str(config.db_path.parent / "models" / "static_embeddings.npy"),
+        cache_size=config.word_vector_cache_size
+    )
+
+    # Инициализация базы знаний
+    kb = KnowledgeBase(config.db_path, emb_model, synonym_dict)
+
+    # Сохранение понятия
+    concept_id = kb.save_concept(
+        term=term,
+        domain=domain,
+        parameters=parameters,
+        concept_id=concept_id,
+        relations=relations,
+    )
+
+    kb.close()
+
+    return concept_id
+
+
 if __name__ == "__main__":
     main()

@@ -325,6 +325,161 @@ class KnowledgeBase:
             })
         return constraints
 
+    def get_concepts_by_relation(
+        self,
+        concept_id: str,
+        relation_type: Optional[str] = None,
+        max_terms: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Получить понятия по типу связи.
+
+        Args:
+            concept_id: Идентификатор понятия.
+            relation_type: Тип связи (is_a, part_of, related_to, synonym) или None для всех.
+            max_terms: Максимальное количество результатов.
+
+        Returns:
+            Список связанных понятий.
+        """
+        cursor = self.conn.cursor()
+
+        if relation_type:
+            cursor.execute("""
+                SELECT r.source_concept_id, r.target_concept_id, r.relation_type, r.confidence,
+                       c.term, c.domain
+                FROM relations r
+                LEFT JOIN concepts c ON r.target_concept_id = c.id
+                WHERE r.source_concept_id = ? AND r.relation_type = ?
+                ORDER BY r.confidence DESC
+                LIMIT ?
+            """, (concept_id, relation_type, max_terms))
+        else:
+            cursor.execute("""
+                SELECT r.source_concept_id, r.target_concept_id, r.relation_type, r.confidence,
+                       c.term, c.domain
+                FROM relations r
+                LEFT JOIN concepts c ON r.target_concept_id = c.id
+                WHERE r.source_concept_id = ?
+                ORDER BY r.confidence DESC
+                LIMIT ?
+            """, (concept_id, max_terms))
+
+        results = []
+        for row in cursor:
+            if row["term"]:
+                results.append({
+                    "concept_id": row["target_concept_id"],
+                    "term": row["term"],
+                    "domain": row["domain"],
+                    "relation_type": row["relation_type"],
+                    "confidence": row["confidence"],
+                })
+        return results
+
+    def get_concepts_by_inverse_relation(
+        self,
+        concept_id: str,
+        relation_type: Optional[str] = None,
+        max_terms: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Получить понятия, связанные с данным (обратное направление).
+
+        Args:
+            concept_id: Идентификатор понятия.
+            relation_type: Тип связи или None для всех.
+            max_terms: Максимальное количество результатов.
+
+        Returns:
+            Список связанных понятий.
+        """
+        cursor = self.conn.cursor()
+
+        if relation_type:
+            cursor.execute("""
+                SELECT r.source_concept_id, r.target_concept_id, r.relation_type, r.confidence,
+                       c.term, c.domain
+                FROM relations r
+                LEFT JOIN concepts c ON r.source_concept_id = c.id
+                WHERE r.target_concept_id = ? AND r.relation_type = ?
+                ORDER BY r.confidence DESC
+                LIMIT ?
+            """, (concept_id, relation_type, max_terms))
+        else:
+            cursor.execute("""
+                SELECT r.source_concept_id, r.target_concept_id, r.relation_type, r.confidence,
+                       c.term, c.domain
+                FROM relations r
+                LEFT JOIN concepts c ON r.source_concept_id = c.id
+                WHERE r.target_concept_id = ?
+                ORDER BY r.confidence DESC
+                LIMIT ?
+            """, (concept_id, max_terms))
+
+        results = []
+        for row in cursor:
+            if row["term"]:
+                results.append({
+                    "concept_id": row["source_concept_id"],
+                    "term": row["term"],
+                    "domain": row["domain"],
+                    "relation_type": row["relation_type"],
+                    "confidence": row["confidence"],
+                })
+        return results
+
+    def get_all_concepts_with_relations(self) -> List[Dict[str, Any]]:
+        """Получить все понятия с их связями.
+
+        Returns:
+            Список понятий с полями relations.
+        """
+        concepts = self.get_all_concepts()
+        for concept in concepts:
+            concept["relations"] = self.get_all_relations(concept["id"])
+        return concepts
+
+    def delete_concept(self, concept_id: str) -> bool:
+        """Удалить понятие и все его связи.
+
+        Args:
+            concept_id: Идентификатор понятия.
+
+        Returns:
+            True при успешном удалении.
+        """
+        cursor = self.conn.cursor()
+
+        try:
+            cursor.execute("BEGIN")
+
+            # Удаление связей
+            cursor.execute(
+                "DELETE FROM relations WHERE source_concept_id = ?",
+                (concept_id,)
+            )
+
+            # Удаление параметров
+            cursor.execute(
+                "DELETE FROM parameters WHERE concept_id = ?",
+                (concept_id,)
+            )
+
+            # Удаление понятия
+            cursor.execute(
+                "DELETE FROM concepts WHERE id = ?",
+                (concept_id,)
+            )
+
+            self.conn.commit()
+            self._cache = None
+            self.logger.info(f"Удалено понятие: {concept_id}")
+            return True
+
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            self.logger.error(f"Ошибка удаления понятия {concept_id}: {e}")
+            return False
+
     def save_concept(
         self,
         term: str,

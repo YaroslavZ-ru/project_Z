@@ -78,6 +78,8 @@ project_Z/
 │   ├── lemmatizer.py # Лемматизатор с LRU-кэшированием
 │   ├── synonyms.py   # Словарь синонимов с весами
 │   ├── text_cleaner.py # Очистка текста
+│   ├── cache.py      # Кэширование (LRU для слов и запросов)
+│   ├── pipeline.py   # Основной конвейер обработки
 │   ├── knowledge_base.py # Класс для работы с БД
 │   ├── search.py     # Поиск в базе знаний
 │   ├── fallback.py   # Fallback-режим с шаблонами
@@ -97,6 +99,8 @@ project_Z/
 │   ├── test_preprocess.py
 │   ├── test_vectorize.py
 │   ├── test_embeddings.py
+│   ├── test_cache.py
+│   ├── test_pipeline_integration.py
 │   ├── test_knowledge_base.py
 │   ├── test_search.py
 │   ├── test_fallback.py
@@ -136,6 +140,8 @@ test_input = {
 {
     "db_path": "data/knowledge_base.db",
     "fasttext_model_path": "models/cc.ru.300.bin",
+    "fasttext_mmap": true,
+    "fallback_embeddings_path": "models/fallback_embeddings.npy",
     "synonyms_path": "data/synonyms.json",
     "domain_templates_path": "configs/domain_templates.json",
     "min_confidence": 0.3,
@@ -147,6 +153,8 @@ test_input = {
     "cache_embeddings": true,
     "log_level": "INFO",
     "cache_lemma_size": 1000,
+    "word_vector_cache_size": 20000,
+    "query_cache_size": 100,
     "max_synonyms_per_token": 2,
     "use_synonyms": true,
     "max_term_length": 100,
@@ -159,24 +167,36 @@ test_input = {
 | Параметр | Тип | Описание |
 |----------|-----|----------|
 | `cache_lemma_size` | int | Размер LRU-кэша лемматизатора (по умолчанию 1000) |
+| `word_vector_cache_size` | int | Размер LRU-кэша векторов слов (по умолчанию 20000) |
+| `query_cache_size` | int | Размер LRU-кэша векторов запросов (по умолчанию 100) |
 | `max_synonyms_per_token` | int | Максимальное количество синонимов на токен (по умолчанию 2) |
 | `use_synonyms` | bool | Включить использование синонимов (по умолчанию true) |
 | `max_term_length` | int | Максимальная длина термина (по умолчанию 100) |
 | `max_hint_length` | int | Максимальная длина подсказки (по умолчанию 50) |
+| `fasttext_model_path` | string | Путь к модели fastText (.bin) |
+| `fasttext_mmap` | bool | Использовать memory-mapping для fastText (по умолчанию true) |
+| `fallback_embeddings_path` | string | Путь к fallback-словарю эмбеддингов (.npy) |
 
 ## Алгоритм работы
 
 1. **Предобработка** - очистка текста, лемматизация, расширение синонимами с весами (0.7/0.3/0.1)
-2. **Векторизация** - вычисление взвешенного вектора запроса через fastText
-3. **Поиск** - поиск похожих понятий в базе знаний (косинусное сходство)
-4. **Агрегация** - группировка и ранжирование параметров
-5. **Fallback** - если ничего не найдено, используется шаблонная генерация
+2. **Векторизация** - вычисление взвешенного вектора запроса через fastText с LRU-кэшированием слов
+3. **Кэширование запросов** - сохранение векторов для повторяющихся запросов (LRU)
+4. **Поиск** - поиск похожих понятий в базе знаний (косинусное сходство)
+5. **Агрегация** - группировка и ранжирование параметров
+6. **Fallback** - если ничего не найдено, используется шаблонная генерация
 
 ### Веса токенов
 
 - Исходные слова термина: суммарный вес 0.7 (распределяется равномерно)
 - Исходные слова подсказок: суммарный вес 0.3 (распределяется равномерно)
 - Синонимы: суммарный вес 0.1 (распределяется равномерно)
+
+### Кэширование
+
+- **LRU-кэш лемматизатора** (`cache_lemma_size`): хранит результаты лемматизации слов
+- **LRU-кэш векторов слов** (`word_vector_cache_size`): хранит векторы для отдельных слов из fastText
+- **LRU-кэш запросов** (`query_cache_size`): хранит итоговые векторы запросов для повторяющихся входов
 
 ## Тестирование
 
@@ -193,6 +213,13 @@ pytest tests/ -v
 - `test_synonyms.py` - 13 тестов (загрузка, сортировка, ограничение)
 - `test_text_cleaner.py` - 22 теста (очистка, символы, пробелы)
 - `test_preprocess.py` - 24 теста (валидация, длина, синонимы, веса)
+
+### Тесты изменений 11-15
+
+- `test_embeddings.py` - 18 тестов (загрузка fastText, fallback, LRU-кэш слов, фразы)
+- `test_vectorize.py` - 12 тестов (формула взвешенной суммы, L2-нормализация, обработка ошибок)
+- `test_cache.py` - 10 тестов (LRU-кэш запросов, инвалидация при изменении конфига)
+- `test_pipeline_integration.py` - 16 тестов (полный конвейер, debug-режим, моки)
 
 ## Формат коммитов
 
@@ -215,4 +242,26 @@ pytest tests/ -v
 <подробности>
 Изменение: #<номер>
 Тесты: <перечислены>
+```
+
+### Примеры коммитов
+
+```
+feat: добавлен модуль векторизации с fastText
+
+Реализован FastTextWrapper с LRU-кэшем слов, поддержкой fallback-словаря
+и методами get_word_vector/get_phrase_vector.
+
+Изменение: #11
+Тесты: test_embeddings.py (18 тестов)
+```
+
+```
+feat: реализован полный конвейер обработки (pipeline)
+
+Объединены предобработка, векторизация и кэширование запросов в
+функцию run_pipeline с поддержкой debug-режима.
+
+Изменение: #14
+Тесты: test_pipeline_integration.py (16 тестов)
 ```

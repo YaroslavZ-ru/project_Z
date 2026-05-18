@@ -30,7 +30,7 @@ from src.embeddings import FastTextWrapper
 from src.vectorize import vectorize
 from src.knowledge_base import KnowledgeBase
 from src.search import search_similar_concepts
-from src.fallback import generate_template_response, load_templates
+from src.fallback import generate_template_response, load_templates, load_domain_keywords
 from src.synonyms import SynonymDict
 from src.aggregation import aggregate_parameters, determine_context
 from src.cache import QueryVectorCache
@@ -103,11 +103,18 @@ def run_pipeline(
     if concepts and np.linalg.norm(concepts[0]['embedding']) < 0.1:
         logger.info("Эмбеддинги случайные, пересчитываем...")
         kb.update_all_embeddings()
+        logger.info("Эмбеддинги пересчитаны")
 
     # Поиск похожих понятий
     candidates = search_similar_concepts(
-        query_vector, kb, config.min_confidence, config.max_candidates
+        query_vector, kb, config.min_confidence, config.max_candidates,
+        use_faiss=getattr(config, "use_faiss", False)
     )
+    
+    # Если все векторы нулевые (нет fastText модели), используем fallback
+    if np.linalg.norm(query_vector) < 1e-6:
+        logger.info("Вектор запроса нулевой, используем fallback")
+        candidates = []  # Явно пустой список для fallback
 
     # Формирование ответа
     if candidates:
@@ -121,26 +128,96 @@ def run_pipeline(
         # Определение контекста
         selected_context = determine_context(candidates)
         
+        # Получение связанных терминов (если есть таблица relations)
+        related_terms = []
+        if candidates:
+            first_candidate_id = candidates[0].get("concept_id")
+            if first_candidate_id:
+                related_terms = kb.get_related_terms(first_candidate_id, max_terms=3)
+        
+        # Получение ограничений (если есть таблица concept_constraints)
+        constraints = []
+        if candidates:
+            first_candidate_id = candidates[0].get("concept_id")
+            if first_candidate_id:
+                constraints = kb.get_constraints(first_candidate_id)
+        
+        # Генерация suggested_refinements
+        suggested_refinements = []
+        
+        # Если омонимия, добавляем подсказку для уточнения
+        if "context_candidates" in selected_context:
+            suggested_refinements.append(
+                "Уточните контекст: выберите домен или добавьте тематическую подсказку"
+            )
+        
+        # Добавляем подсказки на основе подсказок пользователя
+        if processed.get("hints_lemmas"):
+            # Проверяем, не противоречат ли подсказки выбранному домену
+            if "context_candidates" not in selected_context:
+                domain = selected_context.get("domain", "")
+                if domain == "общее":
+                    suggested_refinements.append(
+                        "Уточните контекст: добавьте тематические подсказки для определения предметной области"
+                    )
+                elif domain == "техника":
+                    suggested_refinements.append(
+                        "Можно добавить параметр 'мощность' или 'тип привода'"
+                    )
+                elif domain == "музыка":
+                    suggested_refinements.append(
+                        "Можно добавить параметр 'жанр' или 'исполнитель'"
+                    )
+                elif domain == "слесарный инструмент":
+                    suggested_refinements.append(
+                        "Можно добавить параметр 'покрытие' (хромирование, фосфатирование)"
+                    )
+        
+        # Добавление предупреждений
+        warnings = []
+        
+        # Если омонимия
+        if "context_candidates" in selected_context:
+            warnings.append(
+                "Подсказки имеют низкую семантическую связность, возможен выбор неверного контекста"
+            )
+        
+        # Если параметров мало
+        if len(parameters) < 3:
+            warnings.append(
+                "Слишком мало параметров. Уточните контекст или добавьте подсказки"
+            )
+        
         response = {
             "status": "ok",
             "term": term,
             "selected_context": selected_context,
             "parameters": parameters,
-            "suggested_refinements": [],
-            "warnings": [],
+            "suggested_refinements": suggested_refinements,
+            "warnings": warnings,
+            "related_terms": related_terms,
+            "constraints": constraints,
         }
     else:
         # Fallback-режим
         templates = load_templates(config.domain_templates_path)
+        domain_keywords = load_domain_keywords(config.domain_keywords_path)
         response = generate_template_response(
-            term, hints, processed, templates
+            term, hints, processed, templates, domain_keywords, config.max_parameters
+        )
+        
+        # Добавление предупреждений для fallback
+        if "warnings" not in response:
+            response["warnings"] = []
+        response["warnings"].append(
+            "Понятие не найдено в базе знаний, параметры предположительные"
         )
 
     if debug:
         response["debug_info"] = {
             "query_vector": query_vector[:10].tolist(),
-            "candidates_raw": candidates[:5],
-            "scores_distribution": [c["similarity"] for c in candidates[:10]],
+            "candidates_raw": candidates[:5] if candidates else [],
+            "scores_distribution": [c["similarity"] for c in candidates[:10]] if candidates else [],
         }
 
     return response

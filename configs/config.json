@@ -3,6 +3,7 @@
     "fasttext_model_path": "models/cc.ru.300.bin",
     "synonyms_path": "data/synonyms.json",
     "domain_templates_path": "configs/domain_templates.json",
+    "domain_keywords_path": "configs/domain_keywords.json",
     "min_confidence": 0.3,
     "max_candidates": 20,
     "max_parameters": 15,
@@ -17,5 +18,7 @@
     "max_term_length": 100,
     "max_hint_length": 50,
     "word_vector_cache_size": 20000,
-    "query_cache_size": 100
+    "query_cache_size": 100,
+    "use_faiss": false,
+    "faiss_index_path": ""
 }

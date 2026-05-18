@@ -14,6 +14,7 @@ class Config:
     fasttext_model_path: Path
     synonyms_path: Path
     domain_templates_path: Path
+    domain_keywords_path: Path
     min_confidence: float
     max_candidates: int
     max_parameters: int
@@ -29,6 +30,8 @@ class Config:
     max_hint_length: int
     word_vector_cache_size: int
     query_cache_size: int
+    use_faiss: bool = False
+    faiss_index_path: str = ""
 
     # Допустимые уровни логирования
     VALID_LOG_LEVELS: Set[str] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
@@ -150,6 +153,7 @@ class Config:
             fasttext_model_path=make_absolute(data["fasttext_model_path"]),
             synonyms_path=make_absolute(data["synonyms_path"]),
             domain_templates_path=make_absolute(data["domain_templates_path"]),
+            domain_keywords_path=make_absolute(data.get("domain_keywords_path", "configs/domain_keywords.json")),
             min_confidence=float(data["min_confidence"]),
             max_candidates=int(data["max_candidates"]),
             max_parameters=int(data["max_parameters"]),
@@ -165,6 +169,8 @@ class Config:
             max_hint_length=int(data.get("max_hint_length", 50)),
             word_vector_cache_size=int(data.get("word_vector_cache_size", 20000)),
             query_cache_size=int(data.get("query_cache_size", 100)),
+            use_faiss=bool(data.get("use_faiss", False)),
+            faiss_index_path=str(data.get("faiss_index_path", "")),
         )
 
     def to_dict(self) -> dict:
@@ -174,6 +180,7 @@ class Config:
             "fasttext_model_path": str(self.fasttext_model_path),
             "synonyms_path": str(self.synonyms_path),
             "domain_templates_path": str(self.domain_templates_path),
+            "domain_keywords_path": str(self.domain_keywords_path),
             "min_confidence": self.min_confidence,
             "max_candidates": self.max_candidates,
             "max_parameters": self.max_parameters,
@@ -189,4 +196,6 @@ class Config:
             "max_hint_length": self.max_hint_length,
             "word_vector_cache_size": self.word_vector_cache_size,
             "query_cache_size": self.query_cache_size,
+            "use_faiss": self.use_faiss,
+            "faiss_index_path": self.faiss_index_path,
         }

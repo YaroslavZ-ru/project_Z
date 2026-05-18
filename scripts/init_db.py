@@ -54,7 +54,21 @@ def init_db(db_path: str) -> None:
             type TEXT CHECK(type IN ('string','integer','float','boolean','enum')),
             description TEXT,
             unit TEXT,
-            enum_values TEXT
+            enum_values TEXT,
+            confidence REAL DEFAULT 1.0
+        )
+    """)
+
+    # Создание таблицы relations для связей между понятиями
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_concept_id TEXT REFERENCES concepts(id) ON DELETE CASCADE,
+            target_concept_id TEXT REFERENCES concepts(id) ON DELETE CASCADE,
+            relation_type TEXT CHECK(relation_type IN ('is_a','part_of','related_to','synonym')),
+            confidence REAL DEFAULT 1.0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_concept_id, target_concept_id, relation_type)
         )
     """)
 
@@ -68,13 +82,48 @@ def init_db(db_path: str) -> None:
 
     # Запись версии схемы
     cursor.execute(
-        "INSERT OR IGNORE INTO metadata (key, value) VALUES ('schema_version', '1')"
+        "INSERT OR IGNORE INTO metadata (key, value) VALUES ('schema_version', '2')"
+    )
+
+    # Создание таблицы sessions для механизма сессий
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            term TEXT NOT NULL,
+            accumulated_hints TEXT,
+            selected_domain TEXT,
+            history TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Создание таблицы concept_constraints для ограничений
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS concept_constraints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            concept_id TEXT REFERENCES concepts(id) ON DELETE CASCADE,
+            type TEXT CHECK(type IN ('exclude','require','range')),
+            parameter TEXT NOT NULL,
+            value TEXT,
+            description TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_constraints_concept_id ON concept_constraints(concept_id)"
     )
 
     # Создание индексов
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_concepts_domain ON concepts(domain)")
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_parameters_concept_id ON parameters(concept_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_concept_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_concept_id)"
     )
 
     # Фиксация и закрытие

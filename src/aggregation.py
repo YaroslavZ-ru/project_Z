@@ -147,15 +147,16 @@ def _compute_hint_match(
     return matches / len(all_hint_lemmas)
 
 
-def determine_context(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+def determine_context(candidates: List[Dict[str, Any]], threshold_omonymy: float = 0.1) -> Dict[str, Any]:
     """Определить доминирующий контекст (предметную область).
 
     Args:
         candidates: Список кандидатов.
+        threshold_omonymy: Порог для определения омонимии (разница в confidence).
 
     Returns:
-        Словарь {"domain": str, "confidence": float}.
-        Если кандидатов нет, возвращает {"domain": "не определено", "confidence": 0.0}.
+        Словарь {"domain": str, "confidence": float} или
+        {"context_candidates": [...]} при омонимии.
     """
     if not candidates:
         return {"domain": "не определено", "confidence": 0.0}
@@ -174,6 +175,30 @@ def determine_context(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         domain_scores[domain] += similarity
         domain_counts[domain] += 1
+
+    # Вычисление средней confidence для каждого домена
+    domain_confidences = {
+        d: domain_scores[d] / domain_counts[d] 
+        for d in domain_scores
+    }
+
+    # Проверка на омонимию (несколько доменов с высокой confidence)
+    sorted_domains = sorted(domain_confidences.items(), key=lambda x: x[1], reverse=True)
+    
+    if len(sorted_domains) >= 2:
+        best_conf = sorted_domains[0][1]
+        second_conf = sorted_domains[1][1]
+        
+        if best_conf - second_conf < threshold_omonymy and best_conf > 0.7:
+            # Омонимия: возвращаем кандидатов
+            context_candidates = [
+                {"domain": d, "confidence": c}
+                for d, c in sorted_domains[:3]
+            ]
+            logger.info(
+                f"Обнаружена омонимия: {context_candidates}"
+            )
+            return {"context_candidates": context_candidates}
 
     # Выбор домена с максимальной суммой
     best_domain = max(domain_scores.keys(), key=lambda d: domain_scores[d])

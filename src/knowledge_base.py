@@ -105,7 +105,7 @@ class KnowledgeBase:
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT c.id, c.term, c.domain, c.embedding,
-                   p.name, p.label_ru, p.type, p.description, p.unit, p.enum_values
+                   p.name, p.label_ru, p.type, p.description, p.unit, p.enum_values, p.confidence
             FROM concepts c
             LEFT JOIN parameters p ON c.id = p.concept_id
             ORDER BY c.id, p.id
@@ -132,7 +132,7 @@ class KnowledgeBase:
                     "description": row["description"] or "",
                     "unit": row["unit"],
                     "enum_values": self._parse_enum(row["enum_values"]),
-                    "confidence": 1.0,
+                    "confidence": row["confidence"] if row["confidence"] else 1.0,
                     "source": "knowledge_base",
                 }
                 concepts_dict[cid]["parameters"].append(param)
@@ -173,11 +173,21 @@ class KnowledgeBase:
         for lemma in lemmas:
             tokens_weights.append((lemma, term_weight_per_word))
 
-        # Сбор синонимов
+        # Сбор синонимов (извлекаем только слова из кортежей)
         all_synonyms: set[str] = set()
         for lemma in lemmas:
             for syn in self.synonym_dict.get_synonyms(lemma, max_synonyms=2):
-                all_synonyms.add(syn)
+                # syn - это кортеж (word, weight), берем только слово
+                if isinstance(syn, tuple) and len(syn) >= 1:
+                    syn_word = syn[0]
+                    # Лемматизируем синоним
+                    syn_lemma = self._lemmatizer.lemmatize_word(syn_word)
+                    if syn_lemma:
+                        all_synonyms.add(syn_lemma)
+                elif isinstance(syn, str):
+                    syn_lemma = self._lemmatizer.lemmatize_word(syn)
+                    if syn_lemma:
+                        all_synonyms.add(syn_lemma)
 
         # Веса для синонимов
         if all_synonyms:
@@ -229,6 +239,91 @@ class KnowledgeBase:
         self.conn.commit()
         self._cache = None
         self.logger.info(f"Обновлено {updated} эмбеддингов")
+
+    def get_all_relations(self, concept_id: str) -> List[Dict[str, Any]]:
+        """Получить все связи для понятия.
+
+        Args:
+            concept_id: Идентификатор понятия.
+
+        Returns:
+            Список связей.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT source_concept_id, target_concept_id, relation_type, confidence
+            FROM relations
+            WHERE source_concept_id = ?
+            ORDER BY confidence DESC
+        """, (concept_id,))
+        
+        relations = []
+        for row in cursor:
+            relations.append({
+                "source_concept_id": row["source_concept_id"],
+                "target_concept_id": row["target_concept_id"],
+                "relation_type": row["relation_type"],
+                "confidence": row["confidence"],
+            })
+        return relations
+
+    def get_related_terms(self, concept_id: str, max_terms: int = 3) -> List[Dict[str, Any]]:
+        """Получить связанные термины для понятия.
+
+        Args:
+            concept_id: Идентификатор понятия.
+            max_terms: Максимальное количество связанных терминов.
+
+        Returns:
+            Список связанных терминов с их типами связи.
+        """
+        relations = self.get_all_relations(concept_id)
+        if not relations:
+            return []
+        
+        cursor = self.conn.cursor()
+        related = []
+        for rel in relations[:max_terms]:
+            cursor.execute(
+                "SELECT id, term, domain FROM concepts WHERE id = ?",
+                (rel["target_concept_id"],)
+            )
+            row = cursor.fetchone()
+            if row:
+                related.append({
+                    "concept_id": row["id"],
+                    "term": row["term"],
+                    "domain": row["domain"],
+                    "relation_type": rel["relation_type"],
+                    "confidence": rel["confidence"],
+                })
+        return related
+
+    def get_constraints(self, concept_id: str) -> List[Dict[str, Any]]:
+        """Получить ограничения для понятия.
+
+        Args:
+            concept_id: Идентификатор понятия.
+
+        Returns:
+            Список ограничений.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT type, parameter, value, description
+            FROM concept_constraints
+            WHERE concept_id = ?
+        """, (concept_id,))
+        
+        constraints = []
+        for row in cursor:
+            constraints.append({
+                "type": row["type"],
+                "parameter": row["parameter"],
+                "value": row["value"],
+                "description": row["description"],
+            })
+        return constraints
 
     def close(self) -> None:
         """Закрыть соединение с базой данных."""

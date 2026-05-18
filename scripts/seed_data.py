@@ -2,7 +2,7 @@
 """Скрипт наполнения базы данных тестовыми данными для AI-Terminator.
 
 Добавляет несколько понятий-примеров с их параметрами.
-Эмбеддинги генерируются случайными (нормализованными).
+Эмбеддинги вычисляются через compute_concept_embedding().
 """
 
 import sqlite3
@@ -16,22 +16,31 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import Config
+from src.embeddings import FastTextWrapper
+from src.synonyms import SynonymDict
+from src.knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
 
-def random_embedding(dim: int = 300) -> bytes:
-    """Сгенерировать случайный нормализованный вектор.
+def compute_real_embedding(kb: KnowledgeBase, term: str) -> bytes:
+    """Вычислить реальный эмбеддинг для термина.
 
     Args:
-        dim: Размерность вектора (по умолчанию 300).
+        kb: Экземпляр KnowledgeBase.
+        term: Термин для вычисления эмбеддинга.
 
     Returns:
         Байтовое представление вектора (little-endian float32).
     """
-    vec = np.random.randn(dim).astype("<f4")
-    vec /= np.linalg.norm(vec)
-    return vec.tobytes()
+    try:
+        embedding = kb.compute_concept_embedding(term)
+        return embedding.tobytes()
+    except Exception as e:
+        logger.warning(f"Ошибка вычисления эмбеддинга для '{term}': {e}. Используем случайный вектор.")
+        vec = np.random.randn(300).astype("<f4")
+        vec /= np.linalg.norm(vec)
+        return vec.tobytes()
 
 
 def seed(config: Config, force: bool = False) -> None:
@@ -58,18 +67,43 @@ def seed(config: Config, force: bool = False) -> None:
         # Очистка таблиц
         cursor.execute("DELETE FROM parameters")
         cursor.execute("DELETE FROM concepts")
+        cursor.execute("DELETE FROM relations")
+        cursor.execute("DELETE FROM sessions")
+        cursor.execute("DELETE FROM concept_constraints")
         logger.info("Таблицы очищены")
+
+    # Инициализация компонентов для вычисления эмбеддингов
+    try:
+        emb_model = FastTextWrapper(
+            str(config.fasttext_model_path),
+            str(config.db_path.parent / "models" / "static_embeddings.npy"),
+            cache_size=config.word_vector_cache_size
+        )
+        synonym_dict = SynonymDict(str(config.synonyms_path))
+        kb = KnowledgeBase(str(config.db_path), emb_model, synonym_dict)
+    except Exception as e:
+        logger.warning(f"Ошибка инициализации компонентов: {e}. Используем случайные векторы.")
+        kb = None
 
     # Вставка понятий
     concepts = [
-        ("concept_001", "ключ гаечный", "слесарный инструмент", random_embedding()),
-        ("concept_002", "ключ разводной", "слесарный инструмент", random_embedding()),
-        ("concept_003", "ключ скрипичный", "музыка", random_embedding()),
+        ("concept_001", "ключ гаечный", "слесарный инструмент"),
+        ("concept_002", "ключ разводной", "слесарный инструмент"),
+        ("concept_003", "ключ скрипичный", "музыка"),
     ]
-    cursor.executemany(
-        "INSERT OR IGNORE INTO concepts (id, term, domain, embedding) VALUES (?, ?, ?, ?)",
-        concepts
-    )
+
+    for cid, term, domain in concepts:
+        if kb:
+            embedding = compute_real_embedding(kb, term)
+        else:
+            vec = np.random.randn(300).astype("<f4")
+            vec /= np.linalg.norm(vec)
+            embedding = vec.tobytes()
+        
+        cursor.execute(
+            "INSERT OR IGNORE INTO concepts (id, term, domain, embedding) VALUES (?, ?, ?, ?)",
+            (cid, term, domain, embedding)
+        )
     logger.info(f"Добавлено {len(concepts)} понятий")
 
     # Вставка параметров
@@ -89,6 +123,21 @@ def seed(config: Config, force: bool = False) -> None:
         parameters
     )
     logger.info(f"Добавлено {len(parameters)} параметров")
+
+    # Вставка связей (relations)
+    relations = [
+        ("concept_001", "concept_002", "related_to", 0.8),
+        ("concept_001", "concept_003", "related_to", 0.3),
+    ]
+    cursor.executemany(
+        """
+        INSERT OR IGNORE INTO relations 
+        (source_concept_id, target_concept_id, relation_type, confidence)
+        VALUES (?, ?, ?, ?)
+        """,
+        relations
+    )
+    logger.info(f"Добавлено {len(relations)} связей")
 
     # Фиксация и закрытие
     conn.commit()

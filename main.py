@@ -193,33 +193,37 @@ def run_pipeline(
         # Определение контекста
         selected_context = determine_context(candidates)
         
-        # Получение связанных терминов (если есть таблица relations)
-        related_terms = []
-        if candidates:
-            first_candidate_id = candidates[0].get("concept_id")
-            if first_candidate_id:
-                related_terms = kb.get_related_terms(first_candidate_id, max_terms=3)
-        
-        # Получение ограничений (если есть таблица concept_constraints)
-        constraints = []
-        if candidates:
-            first_candidate_id = candidates[0].get("concept_id")
-            if first_candidate_id:
-                constraints = kb.get_constraints(first_candidate_id)
-        
-        # Генерация suggested_refinements
-        suggested_refinements = []
-        
-        # Если омонимия, добавляем подсказку для уточнения
+        # Обработка омонимии
         if "context_candidates" in selected_context:
+            # Омонимия обнаружена - добавляем подсказку для уточнения
             suggested_refinements.append(
                 "Уточните контекст: выберите домен или добавьте тематическую подсказку"
             )
-        
-        # Добавляем подсказки на основе подсказок пользователя
-        if processed.get("hints_lemmas"):
-            # Проверяем, не противоречат ли подсказки выбранному домену
-            if "context_candidates" not in selected_context:
+            
+            # Добавляем предупреждение о возможной неточности
+            warnings.append(
+                "Подсказки имеют низкую семантическую связность, возможен выбор неверного контекста"
+            )
+            
+            # Добавляем список кандидатов для уточнения
+            context_candidates = selected_context["context_candidates"]
+            logger.info(f"Обнаружена омонимия: {context_candidates}")
+        else:
+            # Омонимии нет - получаем связанные термины и ограничения
+            related_terms = []
+            if candidates:
+                first_candidate_id = candidates[0].get("concept_id")
+                if first_candidate_id:
+                    related_terms = kb.get_related_terms(first_candidate_id, max_terms=3)
+            
+            constraints = []
+            if candidates:
+                first_candidate_id = candidates[0].get("concept_id")
+                if first_candidate_id:
+                    constraints = kb.get_constraints(first_candidate_id)
+            
+            # Добавляем подсказки на основе подсказок пользователя
+            if processed.get("hints_lemmas"):
                 domain = selected_context.get("domain", "")
                 if domain == "общее":
                     suggested_refinements.append(
@@ -240,12 +244,6 @@ def run_pipeline(
         
         # Добавление предупреждений
         warnings = []
-        
-        # Если омонимия
-        if "context_candidates" in selected_context:
-            warnings.append(
-                "Подсказки имеют низкую семантическую связность, возможен выбор неверного контекста"
-            )
         
         # Если параметров мало
         if len(parameters) < 3:

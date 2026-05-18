@@ -213,3 +213,53 @@ def determine_context(candidates: List[Dict[str, Any]], threshold_omonymy: float
     )
 
     return {"domain": best_domain, "confidence": confidence}
+
+
+def resolve_omonymy(
+    candidates: List[Dict[str, Any]],
+    selected_domain: str,
+    threshold_omonymy: float = 0.1,
+) -> List[Dict[str, Any]]:
+    """Фильтровать кандидатов по выбранному домену при омонимии.
+
+    Args:
+        candidates: Список кандидатов.
+        selected_domain: Выбранный пользователем домен.
+        threshold_omonymy: Порог для определения омонимии.
+
+    Returns:
+        Отфильтрованный список кандидатов только для выбранного домена.
+    """
+    context = determine_context(candidates, threshold_omonymy)
+
+    if "context_candidates" not in context:
+        # Омонимия не обнаружена, возвращаем оригинальные кандидаты
+        return candidates
+
+    # Фильтруем кандидаты по выбранному домену
+    filtered = [c for c in candidates if c.get("domain") == selected_domain]
+
+    logger.info(
+        f"Разрешение омонимии: выбран домен '{selected_domain}', "
+        f"осталось {len(filtered)} кандидатов"
+    )
+
+    return filtered
+
+
+def get_omonymy_candidates(candidates: List[Dict[str, Any]], threshold_omonymy: float = 0.1) -> List[Dict[str, Any]]:
+    """Получить список кандидатов при омонимии.
+
+    Args:
+        candidates: Список кандидатов.
+        threshold_omonymy: Порог для определения омонимии.
+
+    Returns:
+        Список кандидатов для уточнения домена или пустой список, если омонимии нет.
+    """
+    context = determine_context(candidates, threshold_omonymy)
+
+    if "context_candidates" in context:
+        return context["context_candidates"]
+
+    return []

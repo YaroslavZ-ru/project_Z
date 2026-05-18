@@ -6,6 +6,7 @@
 
 import json
 import logging
+import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -161,8 +162,14 @@ def generate_template_response(
     templates: Dict[str, Any],
     domain_keywords: Optional[Dict[str, List[str]]] = None,
     max_parameters: int = 15,
+    kb: Optional["KnowledgeBase"] = None,
+    query_vector: Optional[np.ndarray] = None,
+    domain_centroid_threshold: float = 0.3,
 ) -> Dict[str, Any]:
     """Сгенерировать ответ в fallback-режиме.
+
+    Сначала пытается определить домен через центроиды (если есть вектор запроса),
+    затем использует ключевые слова.
 
     Args:
         term: Анализируемый термин.
@@ -171,16 +178,50 @@ def generate_template_response(
         templates: Шаблоны предметных областей.
         domain_keywords: Словарь ключевых слов для доменов (опционально).
         max_parameters: Максимальное количество параметров.
+        kb: Экземпляр KnowledgeBase для получения центроидов (опционально).
+        query_vector: Вектор запроса (опционально).
+        domain_centroid_threshold: Порог сходства для выбора домена через центроид.
 
     Returns:
         Словарь ответа с шаблонными параметрами.
     """
+    import numpy as np
+
     # Извлечь леммы
     term_lemmas = processed_query.get("term_lemmas", [])
     hints_lemmas = processed_query.get("hints_lemmas", [])
 
-    # Определить домен
+    # Сначала определяем домен по ключевым словам
     domain = detect_domain(term_lemmas, hints_lemmas, domain_keywords)
+
+    # Если есть вектор запроса и база знаний, используем центроиды для уточнения
+    if query_vector is not None and kb is not None:
+        try:
+            centroids = kb.get_domain_centroids()
+            
+            if centroids and len(centroids) > 0:
+                # Вычислить сходство с каждым центроидом
+                best_domain = None
+                best_similarity = -1.0
+                
+                for domain_name, centroid in centroids.items():
+                    similarity = float(np.dot(query_vector, centroid))
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_domain = domain_name
+                
+                # Если сходство достаточно высокое, используем домен через центроид
+                if best_domain and best_similarity >= domain_centroid_threshold:
+                    domain = best_domain
+                    logger.info(
+                        f"Домен уточнен через центроид: {domain} (similarity={best_similarity:.3f})"
+                    )
+                else:
+                    logger.debug(
+                        f"Сходство с центроидами недостаточно: {best_similarity:.3f} < {domain_centroid_threshold}"
+                    )
+        except Exception as e:
+            logger.warning(f"Ошибка при определении домена по центроидам: {e}")
 
     # Получить параметры из шаблона
     domain_template = templates.get(domain, {})
@@ -193,8 +234,8 @@ def generate_template_response(
     parameters = []
     for p in template_params:
         param = p.copy()
-        param["confidence"] = 0.3
-        param["source"] = "template"
+        param["confidence"] = 0.4  # Увеличено с 0.3 до 0.4 для центроидов
+        param["source"] = "domain_centroid" if "centro" in str(domain_template) else "template"
         parameters.append(param)
 
     # Генерация suggested_refinements на основе подсказок
@@ -220,7 +261,7 @@ def generate_template_response(
         "term": term,
         "selected_context": {
             "domain": domain,
-            "confidence": 0.3,
+            "confidence": 0.4,  # Увеличено с 0.3 до 0.4 для центроидов
         },
         "parameters": parameters,
         "suggested_refinements": suggested_refinements,

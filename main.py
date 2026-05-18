@@ -157,7 +157,8 @@ def run_pipeline(
     # Поиск похожих понятий
     candidates = search_similar_concepts(
         query_vector, kb, config.min_confidence, config.max_candidates,
-        use_faiss=getattr(config, "use_faiss", False)
+        use_faiss=getattr(config, "use_faiss", False),
+        domain_filter=domain_filter
     )
     
     # Если все векторы нулевые (нет fastText модели), используем fallback
@@ -190,24 +191,35 @@ def run_pipeline(
                 if refinements:
                     suggested_refinements.extend(refinements)
         
-        # Определение контекста
-        selected_context = determine_context(candidates)
+        # Определение контекста с порогами омонимии
+        ambiguity_threshold = getattr(config, "ambiguity_threshold", 0.7)
+        ambiguity_delta = getattr(config, "ambiguity_delta", 0.1)
+        selected_context = determine_context(candidates, threshold_omonymy=ambiguity_delta, ambiguity_threshold=ambiguity_threshold)
         
         # Обработка омонимии
         if "context_candidates" in selected_context:
-            # Омонимия обнаружена - добавляем подсказку для уточнения
-            suggested_refinements.append(
-                "Уточните контекст: выберите домен или добавьте тематическую подсказку"
-            )
+            # Омонимия обнаружена - возвращаем специальный ответ
+            logger.info(f"Обнаружена омонимия: {selected_context['context_candidates']}")
             
-            # Добавляем предупреждение о возможной неточности
-            warnings.append(
-                "Подсказки имеют низкую семантическую связность, возможен выбор неверного контекста"
-            )
+            response = {
+                "status": "ambiguous",
+                "term": term,
+                "context_candidates": selected_context["context_candidates"],
+                "suggested_refinements": [
+                    "Уточните контекст: выберите один из доменов или добавьте тематическую подсказку"
+                ],
+                "warnings": [],
+            }
             
-            # Добавляем список кандидатов для уточнения
-            context_candidates = selected_context["context_candidates"]
-            logger.info(f"Обнаружена омонимия: {context_candidates}")
+            # Если используется сессия, обновляем подсказки, но не домен
+            if session_manager and session_id:
+                session_manager.update_session(
+                    session_id,
+                    new_hints=hints,
+                    selected_domain=None  # Не сохраняем домен при омонимии
+                )
+            
+            return response
         else:
             # Омонимии нет - получаем связанные термины и ограничения
             related_terms = []
@@ -293,8 +305,11 @@ def run_pipeline(
             except Exception as e:
                 logger.warning(f"Ошибка при определении домена по центроидам: {e}")
         
+        # Использовать улучшенный fallback с центроидами
+        domain_centroid_threshold = getattr(config, "domain_centroid_threshold", 0.3)
         response = generate_template_response(
-            term, hints, processed, templates, domain_keywords, config.max_parameters
+            term, hints, processed, templates, domain_keywords, config.max_parameters,
+            kb=kb, query_vector=query_vector, domain_centroid_threshold=domain_centroid_threshold
         )
         
         # Обновление домена в ответе
@@ -309,10 +324,12 @@ def run_pipeline(
         
         # Обновление сессии (если используется)
         if session_manager and session_id:
+            # Не сохраняем домен из fallback по умолчанию
+            auto_save = getattr(config, "auto_save_domain_on_fallback", False)
             session_manager.update_session(
                 session_id,
                 new_hints=hints,
-                selected_domain=domain_filter
+                selected_domain=domain if auto_save else None
             )
 
     if debug:

@@ -549,6 +549,62 @@ class KnowledgeBase:
             self.logger.error(f"Ошибка удаления понятия {concept_id}: {e}")
             return False
 
+    def add_relation(
+        self,
+        source_id: str,
+        target_id: str,
+        relation_type: str,
+        confidence: float = 1.0,
+    ) -> bool:
+        """Добавить связь между понятиями.
+
+        Args:
+            source_id: Идентификатор исходного понятия.
+            target_id: Идентификатор целевого понятия.
+            relation_type: Тип связи (is_a, part_of, related_to, synonym).
+            confidence: Уверенность связи (0.0-1.0).
+
+        Returns:
+            True при успешной вставке, False если связь уже существует или некорректна.
+        """
+        valid_types = {"is_a", "part_of", "related_to", "synonym"}
+        if relation_type not in valid_types:
+            self.logger.error(f"Недопустимый тип связи '{relation_type}'")
+            raise ValueError(f"Недопустимый тип связи '{relation_type}'. Допустимые: {valid_types}")
+
+        if not (0.0 <= confidence <= 1.0):
+            self.logger.warning(f"Недопустимая уверенность связи {confidence}")
+            return False
+
+        # Проверка существования понятий (опционально, для целостности)
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id FROM concepts WHERE id = ?", (source_id,))
+        if not cursor.fetchone():
+            self.logger.warning(f"Исходное понятие не найдено: {source_id}")
+            return False
+
+        cursor.execute("SELECT id FROM concepts WHERE id = ?", (target_id,))
+        if not cursor.fetchone():
+            self.logger.warning(f"Целевое понятие не найдено: {target_id}")
+            return False
+
+        try:
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO relations (source_concept_id, target_concept_id, relation_type, confidence)
+                VALUES (?, ?, ?, ?)
+                """,
+                (source_id, target_id, relation_type, confidence)
+            )
+            self.conn.commit()
+            self.logger.info(
+                f"Добавлена связь: {source_id} -> {target_id} ({relation_type})"
+            )
+            return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Ошибка добавления связи: {e}")
+            return False
+
     def save_concept(
         self,
         term: str,

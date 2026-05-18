@@ -147,12 +147,17 @@ def _compute_hint_match(
     return matches / len(all_hint_lemmas)
 
 
-def determine_context(candidates: List[Dict[str, Any]], threshold_omonymy: float = 0.1) -> Dict[str, Any]:
+def determine_context(
+    candidates: List[Dict[str, Any]],
+    threshold_omonymy: float = 0.1,
+    ambiguity_threshold: float = 0.7,
+) -> Dict[str, Any]:
     """Определить доминирующий контекст (предметную область).
 
     Args:
         candidates: Список кандидатов.
         threshold_omonymy: Порог для определения омонимии (разница в confidence).
+        ambiguity_threshold: Минимальная confidence для домена, чтобы считаться кандидатом.
 
     Returns:
         Словарь {"domain": str, "confidence": float} или
@@ -182,8 +187,14 @@ def determine_context(candidates: List[Dict[str, Any]], threshold_omonymy: float
         for d in domain_scores
     }
 
+    # Фильтрация доменов по порогу ambiguity_threshold
+    filtered_domains = {
+        d: c for d, c in domain_confidences.items() 
+        if c >= ambiguity_threshold
+    }
+
     # Проверка на омонимию (несколько доменов с высокой confidence)
-    sorted_domains = sorted(domain_confidences.items(), key=lambda x: x[1], reverse=True)
+    sorted_domains = sorted(filtered_domains.items(), key=lambda x: x[1], reverse=True)
     
     if len(sorted_domains) >= 2:
         best_conf = sorted_domains[0][1]
@@ -200,19 +211,37 @@ def determine_context(candidates: List[Dict[str, Any]], threshold_omonymy: float
             )
             return {"context_candidates": context_candidates}
 
-    # Выбор домена с максимальной суммой
-    best_domain = max(domain_scores.keys(), key=lambda d: domain_scores[d])
-    best_score = domain_scores[best_domain]
-    best_count = domain_counts[best_domain]
+    # Если есть хотя бы один домен, превысивший порог
+    if filtered_domains:
+        best_domain = max(filtered_domains.keys(), key=lambda d: filtered_domains[d])
+        best_score = domain_scores[best_domain]
+        best_count = domain_counts[best_domain]
 
-    # Confidence = средняя similarity для лучшего домена
-    confidence = best_score / best_count if best_count > 0 else 0.0
+        # Confidence = средняя similarity для лучшего домена
+        confidence = best_score / best_count if best_count > 0 else 0.0
 
-    logger.info(
-        f"Определен контекст: domain='{best_domain}', confidence={confidence:.3f}"
-    )
+        logger.info(
+            f"Определен контекст: domain='{best_domain}', confidence={confidence:.3f}"
+        )
 
-    return {"domain": best_domain, "confidence": confidence}
+        return {"domain": best_domain, "confidence": confidence}
+
+    # Если ни один домен не превысил порог, выбираем лучший из всех
+    if domain_confidences:
+        best_domain = max(domain_confidences.keys(), key=lambda d: domain_confidences[d])
+        best_score = domain_scores[best_domain]
+        best_count = domain_counts[best_domain]
+        confidence = best_score / best_count if best_count > 0 else 0.0
+
+        logger.warning(
+            f"Ни один домен не превысил порог {ambiguity_threshold}. "
+            f"Выбран домен '{best_domain}' с низкой уверенностью {confidence:.3f}"
+        )
+
+        return {"domain": best_domain, "confidence": confidence}
+
+    # Если нет ни одного домена
+    return {"domain": "не определено", "confidence": 0.0}
 
 
 def resolve_omonymy(

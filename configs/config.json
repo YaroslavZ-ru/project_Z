@@ -30,5 +30,13 @@
     "session_ttl_seconds": 1800,
     "session_cache_size": 1000,
     "session_cleanup_interval_seconds": 60,
-    "auto_save_domain_on_ok": true
+    "auto_save_domain_on_ok": true,
+    "ambiguity_threshold": 0.7,
+    "ambiguity_delta": 0.1,
+    "domain_centroid_threshold": 0.3,
+    "auto_save_domain_on_fallback": false,
+    "use_relations": false,
+    "relation_max_depth": 1,
+    "relation_decay_factor": 0.5,
+    "domain_centroids_min_concepts": 2
 }

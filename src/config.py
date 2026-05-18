@@ -42,6 +42,14 @@ class Config:
     session_cache_size: int = 1000
     session_cleanup_interval_seconds: int = 60
     auto_save_domain_on_ok: bool = True
+    ambiguity_threshold: float = 0.7
+    ambiguity_delta: float = 0.1
+    domain_centroid_threshold: float = 0.3
+    auto_save_domain_on_fallback: bool = False
+    use_relations: bool = False
+    relation_max_depth: int = 1
+    relation_decay_factor: float = 0.5
+    domain_centroids_min_concepts: int = 2
 
     # Допустимые уровни логирования
     VALID_LOG_LEVELS: Set[str] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
@@ -195,6 +203,14 @@ class Config:
             session_cache_size=int(data.get("session_cache_size", 1000)),
             session_cleanup_interval_seconds=int(data.get("session_cleanup_interval_seconds", 60)),
             auto_save_domain_on_ok=bool(data.get("auto_save_domain_on_ok", True)),
+            ambiguity_threshold=float(data.get("ambiguity_threshold", 0.7)),
+            ambiguity_delta=float(data.get("ambiguity_delta", 0.1)),
+            domain_centroid_threshold=float(data.get("domain_centroid_threshold", 0.3)),
+            auto_save_domain_on_fallback=bool(data.get("auto_save_domain_on_fallback", False)),
+            use_relations=bool(data.get("use_relations", False)),
+            relation_max_depth=int(data.get("relation_max_depth", 1)),
+            relation_decay_factor=float(data.get("relation_decay_factor", 0.5)),
+            domain_centroids_min_concepts=int(data.get("domain_centroids_min_concepts", 2)),
         )
 
     def to_dict(self) -> dict:
@@ -232,4 +248,12 @@ class Config:
             "session_cache_size": self.session_cache_size,
             "session_cleanup_interval_seconds": self.session_cleanup_interval_seconds,
             "auto_save_domain_on_ok": self.auto_save_domain_on_ok,
+            "ambiguity_threshold": self.ambiguity_threshold,
+            "ambiguity_delta": self.ambiguity_delta,
+            "domain_centroid_threshold": self.domain_centroid_threshold,
+            "auto_save_domain_on_fallback": self.auto_save_domain_on_fallback,
+            "use_relations": self.use_relations,
+            "relation_max_depth": self.relation_max_depth,
+            "relation_decay_factor": self.relation_decay_factor,
+            "domain_centroids_min_concepts": self.domain_centroids_min_concepts,
         }

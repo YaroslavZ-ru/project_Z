@@ -38,6 +38,10 @@ class Config:
     query_cache_size: int
     use_faiss: bool = False
     faiss_index_path: str = ""
+    session_ttl_seconds: int = 1800
+    session_cache_size: int = 1000
+    session_cleanup_interval_seconds: int = 60
+    auto_save_domain_on_ok: bool = True
 
     # Допустимые уровни логирования
     VALID_LOG_LEVELS: Set[str] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
@@ -187,6 +191,10 @@ class Config:
             query_cache_size=int(data.get("query_cache_size", 100)),
             use_faiss=bool(data.get("use_faiss", False)),
             faiss_index_path=str(data.get("faiss_index_path", "")),
+            session_ttl_seconds=int(data.get("session_ttl_seconds", 1800)),
+            session_cache_size=int(data.get("session_cache_size", 1000)),
+            session_cleanup_interval_seconds=int(data.get("session_cleanup_interval_seconds", 60)),
+            auto_save_domain_on_ok=bool(data.get("auto_save_domain_on_ok", True)),
         )
 
     def to_dict(self) -> dict:
@@ -220,4 +228,8 @@ class Config:
             "query_cache_size": self.query_cache_size,
             "use_faiss": self.use_faiss,
             "faiss_index_path": self.faiss_index_path,
+            "session_ttl_seconds": self.session_ttl_seconds,
+            "session_cache_size": self.session_cache_size,
+            "session_cleanup_interval_seconds": self.session_cleanup_interval_seconds,
+            "auto_save_domain_on_ok": self.auto_save_domain_on_ok,
         }

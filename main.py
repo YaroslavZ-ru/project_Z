@@ -35,6 +35,7 @@ from src.synonyms import SynonymDict
 from src.aggregation import aggregate_parameters, determine_context
 from src.cache import QueryVectorCache
 from src.generative import GenerativeHelper
+from src.sessions import SessionManager
 
 
 def run_pipeline(
@@ -44,6 +45,8 @@ def run_pipeline(
     debug: bool = False,
     cache: Optional[QueryVectorCache] = None,
     generative_helper: Optional[GenerativeHelper] = None,
+    session_manager: Optional[SessionManager] = None,
+    session_id: Optional[str] = None,
 ) -> dict:
     """Запустить полный конвейер обработки термина.
 
@@ -58,6 +61,33 @@ def run_pipeline(
         dict: Структурированный ответ.
     """
     logger.info(f"Pipeline запущен: term='{term}', hints_count={len(hints)}")
+
+    # Обработка session_id для интерактивных сессий
+    accumulated_hints = hints.copy()
+    domain_filter = None
+
+    if session_manager and session_id:
+        # Получаем существующую сессию
+        existing_session = session_manager.get_session(session_id)
+        if existing_session is None:
+            return {
+                "status": "error",
+                "message": "Session not found or expired",
+                "term": term,
+                "selected_context": {"domain": "не определено", "confidence": 0.0},
+                "parameters": [],
+                "suggested_refinements": [],
+                "warnings": ["Сессия не найдена или истекла"],
+            }
+
+        # Объединяем подсказки из сессии и текущие
+        accumulated_hints = existing_session.get("accumulated_hints", []).copy()
+        accumulated_hints.extend(hints)  # Добавляем новые подсказки
+
+        # Домен для фильтрации (приоритет: параметр > сессия)
+        domain_filter = existing_session.get("selected_domain")
+
+        logger.debug(f"Используем сессию {session_id}: hints={accumulated_hints}, domain={domain_filter}")
 
     # Инициализация компонентов
     synonym_dict = SynonymDict(config.synonyms_path)
@@ -74,6 +104,14 @@ def run_pipeline(
         max_new_params=config.generative_max_new_params,
         timeout_seconds=config.generative_timeout_seconds,
         keywords=config.generative_keywords,
+    )
+    
+    # Инициализация SessionManager
+    session_manager = SessionManager(
+        session_ttl_seconds=config.session_ttl_seconds,
+        session_cache_size=config.session_cache_size,
+        session_cleanup_interval_seconds=config.session_cleanup_interval_seconds,
+        auto_save_domain_on_ok=config.auto_save_domain_on_ok,
     )
     
     # Предобработка
@@ -215,6 +253,14 @@ def run_pipeline(
                 "Слишком мало параметров. Уточните контекст или добавьте подсказки"
             )
         
+        # Обновление сессии (если используется)
+        if session_manager and session_id:
+            session_manager.update_session(
+                session_id,
+                new_hints=hints,
+                selected_domain=domain_filter
+            )
+        
         response = {
             "status": "ok",
             "term": term,
@@ -239,6 +285,14 @@ def run_pipeline(
         response["warnings"].append(
             "Понятие не найдено в базе знаний, параметры предположительные"
         )
+        
+        # Обновление сессии (если используется)
+        if session_manager and session_id:
+            session_manager.update_session(
+                session_id,
+                new_hints=hints,
+                selected_domain=domain_filter
+            )
 
     if debug:
         response["debug_info"] = {
@@ -272,13 +326,37 @@ def main():
     # Обработка входных данных
     # Создаем кэш для векторов запросов
     cache = QueryVectorCache(max_size=config.query_cache_size)
+    
+    # Создаем SessionManager для поддержки интерактивных сессий
+    session_manager = SessionManager(
+        session_ttl_seconds=config.session_ttl_seconds,
+        session_cache_size=config.session_cache_size,
+        session_cleanup_interval_seconds=config.session_cleanup_interval_seconds,
+        auto_save_domain_on_ok=config.auto_save_domain_on_ok,
+    )
+    
+    # Получаем session_id из входных данных (если есть)
+    session_id = test_input.get("session_id")
+    
     result = run_pipeline(
         test_input["term"],
         test_input.get("hints", []),
         config,
         debug=test_input.get("debug", False),
-        cache=cache
+        cache=cache,
+        session_manager=session_manager,
+        session_id=session_id
     )
+    
+    # Если сессия была создана, добавляем session_id в ответ
+    if session_id is None and result.get("status") == "ok":
+        # Создаем новую сессию
+        new_session_id = session_manager.create_session(
+            test_input["term"],
+            test_input.get("hints", [])
+        )
+        result["session_id"] = new_session_id
+        logger.info(f"Создана новая сессия: {new_session_id}")
 
     # Вывод результата
     print("\nРезультат обработки:")

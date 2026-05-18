@@ -26,5 +26,9 @@
     "word_vector_cache_size": 20000,
     "query_cache_size": 100,
     "use_faiss": false,
-    "faiss_index_path": ""
+    "faiss_index_path": "",
+    "session_ttl_seconds": 1800,
+    "session_cache_size": 1000,
+    "session_cleanup_interval_seconds": 60,
+    "auto_save_domain_on_ok": true
 }

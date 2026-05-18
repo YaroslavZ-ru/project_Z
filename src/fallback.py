@@ -106,6 +106,54 @@ def detect_domain(
     return best_domain
 
 
+def detect_domain_with_centroids(
+    term_lemmas: List[str],
+    hints_lemmas: List[List[str]],
+    kb: "KnowledgeBase",
+    query_vector: np.ndarray,
+    domain_keywords: Optional[Dict[str, List[str]]] = None,
+) -> str:
+    """Определить предметную область с использованием центроидов доменов.
+
+    Сначала проверяет ключевые слова, затем использует центроиды для уточнения.
+
+    Args:
+        term_lemmas: Леммы термина.
+        hints_lemmas: Леммы подсказок (список списков).
+        kb: Экземпляр KnowledgeBase для получения центроидов.
+        query_vector: Вектор запроса.
+        domain_keywords: Словарь ключевых слов для доменов (опционально).
+
+    Returns:
+        Название предметной области.
+    """
+    import numpy as np
+
+    # Сначала определяем домен по ключевым словам
+    domain_by_keywords = detect_domain(term_lemmas, hints_lemmas, domain_keywords)
+
+    # Если домен "общее" или есть центроиды, используем их для уточнения
+    if domain_by_keywords == "общее" or kb is not None:
+        try:
+            # Пытаемся получить центроиды
+            centroids = kb.get_domain_centroids() if kb else {}
+            
+            if centroids and len(centroids) > 0:
+                # Используем ближайший центроид
+                domain_by_centroid = kb.get_closest_domain(query_vector)
+                
+                if domain_by_centroid:
+                    logger.info(
+                        f"Домен уточнен по центроиду: {domain_by_centroid} "
+                        f"(было: {domain_by_keywords})"
+                    )
+                    return domain_by_centroid
+        except Exception as e:
+            logger.warning(f"Ошибка при определении домена по центроидам: {e}")
+
+    return domain_by_keywords
+
+
 def generate_template_response(
     term: str,
     hints: List[str],

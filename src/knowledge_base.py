@@ -438,6 +438,75 @@ class KnowledgeBase:
             concept["relations"] = self.get_all_relations(concept["id"])
         return concepts
 
+    def get_domain_centroids(self) -> Dict[str, np.ndarray]:
+        """Вычислить центроиды для каждого домена.
+
+        Центроид - это средний вектор всех понятий в домене.
+
+        Returns:
+            Словарь {domain: centroid_vector}.
+        """
+        concepts = self.get_all_concepts(use_cache=False)
+        
+        # Группировка по доменам
+        domain_vectors: Dict[str, List[np.ndarray]] = {}
+        for concept in concepts:
+            domain = concept.get("domain", "не определено")
+            embedding = concept.get("embedding")
+            
+            if embedding is not None and len(embedding) == 300:
+                if domain not in domain_vectors:
+                    domain_vectors[domain] = []
+                domain_vectors[domain].append(embedding)
+        
+        # Вычисление центроидов
+        centroids = {}
+        for domain, vectors in domain_vectors.items():
+            if vectors:
+                # Среднее по всем векторам домена
+                centroid = np.mean(vectors, axis=0)
+                # Нормализация
+                norm = np.linalg.norm(centroid)
+                if norm > 1e-9:
+                    centroid = centroid / norm
+                else:
+                    centroid = np.zeros(300, dtype=np.float32)
+                centroids[domain] = centroid
+        
+        self.logger.info(f"Вычислено центроидов для {len(centroids)} доменов")
+        return centroids
+
+    def get_closest_domain(self, query_vector: np.ndarray) -> Optional[str]:
+        """Определить ближайший домен для вектора запроса.
+
+        Args:
+            query_vector: Вектор запроса.
+
+        Returns:
+            Название домена или None, если нет центроидов.
+        """
+        centroids = self.get_domain_centroids()
+        
+        if not centroids:
+            return None
+        
+        # Вычисление сходства с каждым центроидом
+        best_domain = None
+        best_similarity = -1.0
+        
+        for domain, centroid in centroids.items():
+            similarity = float(np.dot(query_vector, centroid))
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_domain = domain
+        
+        if best_domain:
+            self.logger.debug(
+                f"Ближайший домен: {best_domain} (similarity={best_similarity:.3f})"
+            )
+        
+        return best_domain
+
     def delete_concept(self, concept_id: str) -> bool:
         """Удалить понятие и все его связи.
 

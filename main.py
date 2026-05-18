@@ -30,7 +30,7 @@ from src.embeddings import FastTextWrapper
 from src.vectorize import vectorize
 from src.knowledge_base import KnowledgeBase
 from src.search import search_similar_concepts
-from src.fallback import generate_template_response, load_templates, load_domain_keywords
+from src.fallback import generate_template_response, load_templates, load_domain_keywords, detect_domain
 from src.synonyms import SynonymDict
 from src.aggregation import aggregate_parameters, determine_context
 from src.cache import QueryVectorCache
@@ -273,9 +273,32 @@ def run_pipeline(
         # Fallback-режим
         templates = load_templates(config.domain_templates_path)
         domain_keywords = load_domain_keywords(config.domain_keywords_path)
+        
+        # Определение домена с использованием центроидов (если есть вектор запроса)
+        domain = detect_domain(
+            processed.get("term_lemmas", []),
+            processed.get("hints_lemmas", []),
+            domain_keywords
+        )
+        
+        # Если есть вектор запроса и база знаний, используем центроиды для уточнения
+        if np.linalg.norm(query_vector) > 1e-6 and kb is not None:
+            try:
+                centroids = kb.get_domain_centroids()
+                if centroids and len(centroids) > 0:
+                    domain_by_centroid = kb.get_closest_domain(query_vector)
+                    if domain_by_centroid:
+                        domain = domain_by_centroid
+                        logger.info(f"Домен уточнен по центроиду: {domain}")
+            except Exception as e:
+                logger.warning(f"Ошибка при определении домена по центроидам: {e}")
+        
         response = generate_template_response(
             term, hints, processed, templates, domain_keywords, config.max_parameters
         )
+        
+        # Обновление домена в ответе
+        response["selected_context"]["domain"] = domain
         
         # Добавление предупреждений для fallback
         if "warnings" not in response:

@@ -20,6 +20,12 @@ class Config:
     max_parameters: int
     use_generative: bool
     generative_model: str
+    generative_max_new_tokens: int
+    generative_temperature: float
+    generative_max_new_params: int
+    generative_timeout_seconds: float
+    min_parameters_for_generative: int
+    generative_keywords: list[str]
     timeout_seconds: float
     cache_embeddings: bool
     log_level: str
@@ -159,6 +165,16 @@ class Config:
             max_parameters=int(data["max_parameters"]),
             use_generative=bool(data["use_generative"]),
             generative_model=str(data["generative_model"]),
+            generative_max_new_tokens=int(data.get("generative_max_new_tokens", 100)),
+            generative_temperature=float(data.get("generative_temperature", 0.7)),
+            generative_max_new_params=int(data.get("generative_max_new_params", 3)),
+            generative_timeout_seconds=float(data.get("generative_timeout_seconds", 2.0)),
+            min_parameters_for_generative=int(data.get("min_parameters_for_generative", 5)),
+            generative_keywords=list(data.get("generative_keywords", [
+                "материал", "размер", "тип", "скорость", "мощность", "вес",
+                "длина", "цвет", "напряжение", "ёмкость", "частота", "температура",
+                "давление", "форма", "покрытие", "привод", "источник энергии",
+            ])),
             timeout_seconds=float(data["timeout_seconds"]),
             cache_embeddings=bool(data["cache_embeddings"]),
             log_level=str(data["log_level"]),
@@ -186,6 +202,12 @@ class Config:
             "max_parameters": self.max_parameters,
             "use_generative": self.use_generative,
             "generative_model": self.generative_model,
+            "generative_max_new_tokens": self.generative_max_new_tokens,
+            "generative_temperature": self.generative_temperature,
+            "generative_max_new_params": self.generative_max_new_params,
+            "generative_timeout_seconds": self.generative_timeout_seconds,
+            "min_parameters_for_generative": self.min_parameters_for_generative,
+            "generative_keywords": self.generative_keywords,
             "timeout_seconds": self.timeout_seconds,
             "cache_embeddings": self.cache_embeddings,
             "log_level": self.log_level,

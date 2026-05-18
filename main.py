@@ -34,6 +34,7 @@ from src.fallback import generate_template_response, load_templates, load_domain
 from src.synonyms import SynonymDict
 from src.aggregation import aggregate_parameters, determine_context
 from src.cache import QueryVectorCache
+from src.generative import GenerativeHelper
 
 
 def run_pipeline(
@@ -42,6 +43,7 @@ def run_pipeline(
     config: Config,
     debug: bool = False,
     cache: Optional[QueryVectorCache] = None,
+    generative_helper: Optional[GenerativeHelper] = None,
 ) -> dict:
     """Запустить полный конвейер обработки термина.
 
@@ -63,6 +65,15 @@ def run_pipeline(
         str(config.fasttext_model_path),
         str(config.db_path.parent / "models" / "static_embeddings.npy"),
         cache_size=config.word_vector_cache_size
+    )
+    generative_helper = GenerativeHelper(
+        use_generative=config.use_generative,
+        model_name=config.generative_model,
+        max_new_tokens=config.generative_max_new_tokens,
+        temperature=config.generative_temperature,
+        max_new_params=config.generative_max_new_params,
+        timeout_seconds=config.generative_timeout_seconds,
+        keywords=config.generative_keywords,
     )
     
     # Предобработка
@@ -124,6 +135,22 @@ def run_pipeline(
             processed.get("hints_lemmas", []),
             config.max_parameters
         )
+        
+        # Генеративное достраивание (если параметров мало и включен режим)
+        if generative_helper and generative_helper.is_available():
+            min_params_for_gen = getattr(config, "min_parameters_for_generative", 5)
+            if len(parameters) < min_params_for_gen:
+                new_params, refinements = generative_helper.generate_suggestions(
+                    term, hints, parameters
+                )
+                if new_params:
+                    parameters.extend(new_params)
+                    # Ограничиваем общее количество параметров
+                    if len(parameters) > config.max_parameters:
+                        parameters = parameters[:config.max_parameters]
+                    logger.info(f"Генеративное достраивание: добавлено {len(new_params)} параметров")
+                if refinements:
+                    suggested_refinements.extend(refinements)
         
         # Определение контекста
         selected_context = determine_context(candidates)
